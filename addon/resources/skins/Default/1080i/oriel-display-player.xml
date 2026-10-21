@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The page over Kodi's video. -->
+<window>
+  <controls>
+    <!-- Invisible, but drawn by Kodi. With HDR output Kodi composites its GUI
+         only in frames where it drew something itself; the page alone
+         doesn't count. -->
+    <control type="image">
+      <left>0</left><top>0</top><width>1</width><height>1</height>
+      <texture colordiffuse="00FFFFFF">$INFO[Window.Property(white)]</texture>
+    </control>
+    <control type="renderaddon" id="10">
+      <left>0</left><top>0</top><width>1920</width><height>1080</height>
+    </control>
+  </controls>
+</window>

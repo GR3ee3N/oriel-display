@@ -1,0 +1,14 @@
+[package]
+name = "vfs-oriel-display-loader"
+description = "The library Kodi loads for vfs.oriel.display; it loads the add-on itself"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "vfs_oriel_display_loader"
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"

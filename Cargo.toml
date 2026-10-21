@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace.dependencies]
+kodi-sys = { path = "crates/kodi-sys" }
+oriel-display-protocol = { path = "crates/protocol" }
+
+[profile.release]
+lto = "thin"
+strip = true

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- build/compile.sh fills in the versions: ours from build/versions.env, Kodi's
+     add-on API minimums from the pinned dev-kit. -->
+<addon id="vfs.oriel.display" name="Oriel display" version="@VERSION@" provider-name="Oriel">
+  <requires>
+    <import addon="kodi.binary.global.main" version="@ADDON_GLOBAL_VERSION_MAIN_MIN@"/>
+    <import addon="kodi.binary.global.gui" version="@ADDON_GLOBAL_VERSION_GUI_MIN@"/>
+    <import addon="kodi.binary.instance.vfs" version="@ADDON_INSTANCE_VERSION_VFS_MIN@"/>
+  </requires>
+  <extension point="kodi.vfs" protocols="orieldisplay" extensions="" files="true" directories="false" filedirectories="false" library_linux="vfs.oriel.display.so"/>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en_GB">Draws Oriel apps' pages in Kodi's own GUI frame, over video.</summary>
+    <platform>linux-aarch64</platform>
+    <license>GPL-3.0-or-later</license>
+    <source>https://github.com/GR3ee3N/oriel-display</source>
+    <website>https://github.com/GR3ee3N/oriel-display</website>
+  </extension>
+</addon>

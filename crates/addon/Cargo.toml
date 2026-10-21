@@ -1,0 +1,17 @@
+[package]
+name = "vfs-oriel-display"
+description = "Draws Oriel pages in Kodi's own GUI frame"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "vfs_oriel_display"
+crate-type = ["cdylib"]
+
+[dependencies]
+kodi-sys.workspace = true
+oriel-display-protocol.workspace = true
+libc = "0.2"
+serde_json = "1"
