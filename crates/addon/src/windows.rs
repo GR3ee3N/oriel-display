@@ -89,6 +89,7 @@ const PAGE_KEYS: &[RangeInclusive<u32>] = &[
     sys::ADDON_ACTION_PLAYER_FORWARD..=sys::ADDON_ACTION_PLAYER_PLAY,
     sys::ADDON_ACTION_NAV_BACK..=sys::ADDON_ACTION_NAV_BACK,
     sys::ADDON_ACTION_CONTEXT_MENU..=sys::ADDON_ACTION_CONTEXT_MENU,
+    sys::ADDON_ACTION_REMOTE_0..=sys::ADDON_ACTION_REMOTE_9,
     sys::ADDON_ACTION_JUMP_SMS2..=sys::ADDON_ACTION_JUMP_SMS9,
     sys::ADDON_ACTION_PLAYER_PLAYPAUSE..=sys::ADDON_ACTION_PLAYER_PLAYPAUSE,
 ];
@@ -356,6 +357,9 @@ mod tests {
         assert!(!consumed(Which::Player, sys::ADDON_ACTION_STOP));
         assert!(consumed(Which::Player, sys::ADDON_ACTION_NEXT_ITEM));
         assert!(consumed(Which::Player, sys::ADDON_ACTION_SHOW_INFO));
+        assert!(consumed(Which::Browse, sys::ADDON_ACTION_REMOTE_0));
+        assert!(consumed(Which::Browse, sys::ADDON_ACTION_REMOTE_9));
+        assert!(consumed(Which::Player, sys::ADDON_ACTION_REMOTE_0));
         assert!(!consumed(Which::Browse, sys::ADDON_ACTION_BUILT_IN_FUNCTION));
         assert!(!consumed(Which::Browse, sys::ADDON_ACTION_VOLUME_UP));
     }
