@@ -1,6 +1,6 @@
-//! The control client's socket: the framework's Python, one JSON object per
-//! packet (docs/protocol.md). It opens and closes the windows and hears keys
-//! and window changes.
+//! Serve framework Python control requests as one JSON object per packet.
+//! The client controls windows and receives remote actions and window events
+//! through the protocol in docs/protocol.md.
 
 use crate::kodi::error;
 use crate::sockets::{self, Protocol, Server};
@@ -51,7 +51,7 @@ fn serve(fd: RawFd) {
 }
 
 fn gone() {
-    // Nobody would close them, and they hold Kodi's keys.
+    // Close disconnected client windows so they cannot retain Kodi input.
     if !windows::unloading() {
         windows::request_close();
     }

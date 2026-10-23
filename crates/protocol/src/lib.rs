@@ -1,48 +1,47 @@
-//! Wire format between a page producer (the framework's shell) and
-//! vfs.oriel.display, over a `SOCK_SEQPACKET` socket in the abstract
-//! namespace. Buffer fds ride along with [`kind::BUFFER`] as `SCM_RIGHTS`.
-//! `docs/protocol.md` specifies it.
+//! Wire format for the framework shell and vfs.oriel.display over a Linux
+//! abstract SOCK_SEQPACKET socket. Attach plane descriptors to [`kind::BUFFER`]
+//! packets using SCM_RIGHTS. See docs/protocol.md for the protocol contract.
 
 #![no_std]
 
-/// The producer's socket in the abstract namespace (after the leading NUL).
+/// Producer socket name following the leading NUL in the Linux abstract namespace.
 pub const SOCKET: &[u8] = b"oriel-display";
-/// The control client's socket: JSON messages, see docs/protocol.md.
+/// Control socket name for JSON packets described in docs/protocol.md.
 pub const CONTROL_SOCKET: &[u8] = b"oriel-display-control";
 
-/// The producer protocol's version, sent in [`kind::HELLO`].
+/// Producer protocol version exchanged in [`kind::HELLO`].
 pub const VERSION: u32 = 1;
-/// The control protocol's version, in its `hello`.
+/// Control protocol version exchanged in its JSON hello.
 pub const CONTROL_VERSION: u32 = 1;
 
-/// Message kinds.
+/// Producer protocol message kinds.
 pub mod kind {
-    /// Producer: a new buffer, one fd per plane attached.
+    /// Producer: import a buffer with one attached descriptor per plane.
     pub const BUFFER: u32 = 1;
-    /// Producer: show buffer `id` from the next GUI frame.
+    /// Producer: select buffer id for the next GUI frame.
     pub const FRAME: u32 = 2;
-    /// Producer: buffer `id` is gone.
+    /// Producer: remove the imported buffer id.
     pub const FORGET: u32 = 3;
-    /// Both: the first message, `id` the protocol version. The add-on
-    /// answers with the version it will use.
+    /// Both: handshake with the protocol version in id; the add-on confirms
+    /// the accepted version.
     pub const HELLO: u32 = 4;
-    /// Add-on: buffer `id` was drawn into a GUI frame for the first time.
+    /// Add-on: acknowledge the frame as drawn; superseded or unknown ids are acknowledged without drawing.
     pub const DRAWN: u32 = 10;
-    /// Add-on: the GPU no longer reads buffer `id`.
+    /// Add-on: buffer id is safe for the producer to render into again.
     pub const RELEASED: u32 = 11;
-    /// Add-on: the producer's version is not spoken; `id` is the add-on's.
-    /// The add-on closes the connection after it.
+    /// Add-on: refuse the protocol version, report the supported version in id,
+    /// then close the connection.
     pub const REFUSED: u32 = 12;
-    /// Add-on: the page is not drawn now; the producer may stop rendering.
+    /// Add-on: no window draws the page; rendering may pause.
     pub const HIDDEN: u32 = 13;
-    /// Add-on: the page is drawn again.
+    /// Add-on: a window is drawing the page.
     pub const SHOWN: u32 = 14;
-    /// Add-on: every buffer was dropped and released (no window was open);
-    /// send `BUFFER` again before showing one.
+    /// Add-on: all windows closed and imports were dropped; resend BUFFER
+    /// before selecting any buffer again.
     pub const RESET: u32 = 15;
 }
 
-/// Every message, in both directions. Fields after `id` are for [`kind::BUFFER`].
+/// Fixed packet layout in both directions; fields after id apply only to [`kind::BUFFER`].
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Msg {
@@ -50,7 +49,7 @@ pub struct Msg {
     pub id: u32,
     pub width: i32,
     pub height: i32,
-    /// DRM fourcc.
+    /// DRM fourcc pixel format.
     pub format: u32,
     pub planes: u32,
     pub offsets: [u32; 4],
@@ -62,7 +61,7 @@ pub struct Msg {
 pub const SIZE: usize = 64;
 const _: () = assert!(size_of::<Msg>() == SIZE);
 
-/// `DRM_FORMAT_MOD_INVALID`: no modifier given.
+/// DRM_FORMAT_MOD_INVALID indicates that no format modifier was supplied.
 pub const MODIFIER_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
 
 impl Msg {
@@ -130,7 +129,7 @@ mod tests {
         };
         let bytes = msg.to_bytes();
         assert_eq!(Msg::from_bytes(&bytes), msg);
-        // Little-endian targets send the struct's memory as it is.
+        // Little-endian targets must match the wire format byte for byte in memory.
         let memory: [u8; SIZE] = unsafe { core::mem::transmute(msg) };
         if cfg!(target_endian = "little") {
             assert_eq!(bytes, memory);

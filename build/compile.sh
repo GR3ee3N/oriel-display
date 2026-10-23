@@ -9,7 +9,7 @@ set +a
 CACHE=$REPO/.cache
 DEVKIT=$(build/devkit.sh)
 
-# The committed bindings must match the pinned dev-kit.
+# Verify committed bindings against the pinned Kodi dev-kit before compilation.
 build/bindgen.sh "$DEVKIT/include" "$CACHE/bindings.rs"
 cmp -s "$CACHE/bindings.rs" crates/kodi-sys/src/bindings.rs \
     || { echo "crates/kodi-sys/src/bindings.rs is out of date; run tools/bindgen.sh" >&2; exit 1; }
@@ -23,7 +23,7 @@ ADDON=$CACHE/runtime/vfs.oriel.display
 rm -rf "$CACHE/runtime"
 mkdir -p "$ADDON/lib"
 RELEASE=$CARGO_TARGET_DIR/$TARGET/release
-# Kodi loads the loader; the add-on's name changes with every build (see crates/loader).
+# Give each implementation build a unique filename behind the Kodi loader (crates/loader).
 BUILD=$(sha256sum "$RELEASE/libvfs_oriel_display.so" | cut -c1-12)
 install -m 755 "$RELEASE/libvfs_oriel_display_loader.so" "$ADDON/vfs.oriel.display.so"
 install -m 755 "$RELEASE/libvfs_oriel_display.so" "$ADDON/lib/oriel-display-$BUILD.so"

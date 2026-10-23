@@ -1,12 +1,10 @@
-//! A small safe layer over Kodi's add-on C API (`kodi-sys`): the library's
-//! entry points, logging, a VFS instance, windows and the render control.
+//! Wrap kodi-sys for add-on entry points, logging, VFS, windows and render controls.
 //!
-//! Kodi calls everything here from its own threads. Every callback catches
-//! panics, which must not unwind into Kodi.
+//! Kodi invokes callbacks on its own threads. Catch panics at each callback
+//! boundary so Rust unwinding cannot cross into Kodi.
 //!
-//! Kodi unloads the library after `destroy`, but its windows can still call
-//! back afterwards, so the library pins itself in memory (`RTLD_NODELETE`).
-//! After [`detach`] nothing here calls Kodi any more.
+//! Keep the library mapped with RTLD_NODELETE because window callbacks can
+//! outlive destroy. After [`detach`], stop accessing Kodi's callback tables.
 
 use kodi_sys as sys;
 use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
@@ -18,13 +16,13 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 static INTERFACE: AtomicPtr<sys::AddonGlobalInterface> = AtomicPtr::new(null_mut());
 static HOOKS: OnceLock<Hooks> = OnceLock::new();
 
-/// What the add-on gives Kodi.
+/// Add-on lifecycle and VFS hooks invoked by Kodi.
 pub struct Hooks {
-    /// The library was loaded, or loaded again after a `destroy`.
+    /// Initialize after a load, including a reload following destroy.
     pub create: fn(),
-    /// Kodi is about to unload the library. Call [`detach`] at the end.
+    /// Finish unload cleanup, then call [`detach`] to stop accessing Kodi.
     pub destroy: fn(),
-    /// `Exists` on the add-on's VFS protocol, with the whole URL.
+    /// Handle a VFS Exists request with the complete protocol URL.
     pub vfs_exists: fn(&str) -> bool,
 }
 
@@ -35,18 +33,18 @@ pub enum Level {
     Error = sys::ADDON_LOG_ERROR as isize,
 }
 
-/// Stops all calls into Kodi; its tables go with the add-on.
+/// Stop Kodi API access before unload invalidates its tables.
 pub fn detach() {
     INTERFACE.store(null_mut(), Ordering::Release);
 }
 
 fn to_kodi() -> Option<&'static sys::AddonToKodiFuncTable_Addon> {
     let interface = INTERFACE.load(Ordering::Acquire);
-    // Set once in ADDON_Create; Kodi keeps the tables until it unloads us.
+    // ADDON_Create initializes these tables; Kodi retains them until unload.
     unsafe { interface.as_ref().and_then(|i| i.toKodi.as_ref()) }
 }
 
-/// Kodi's handle for this add-on, the first argument of most calls.
+/// Kodi add-on handle required as the first argument to most API calls.
 fn base() -> *mut c_void {
     to_kodi().map_or(null_mut(), |t| t.kodiBase)
 }
@@ -55,7 +53,7 @@ fn c_string(text: &str) -> CString {
     CString::new(text.replace('\0', " ")).unwrap_or_default()
 }
 
-/// Where Kodi installed the add-on.
+/// Return the add-on installation path supplied by Kodi.
 pub fn addon_path() -> Option<String> {
     let kodi = to_kodi()?;
     let get = unsafe { kodi.kodi_addon.as_ref() }?.get_addon_path?;
@@ -72,7 +70,7 @@ pub fn addon_path() -> Option<String> {
 
 pub fn log(level: Level, message: &str) {
     let Some(log) = to_kodi().and_then(|t| t.addon_log_msg) else { return };
-    // Kodi clears it while unloading the add-on.
+    // Kodi can clear this callback while unloading the add-on.
     if base().is_null() {
         return;
     }
@@ -80,7 +78,7 @@ pub fn log(level: Level, message: &str) {
     unsafe { log(base(), level as c_int, message.as_ptr()) };
 }
 
-/// Shown only with Kodi's debug logging on.
+/// Emit only when Kodi debug logging is enabled.
 macro_rules! debug {
     ($($arg:tt)*) => { $crate::kodi::log($crate::kodi::Level::Debug, &format!($($arg)*)) };
 }
@@ -92,7 +90,7 @@ macro_rules! error {
 }
 pub(crate) use {debug, error, info};
 
-/// Runs a callback from Kodi; a panic is logged and gives `fallback`.
+/// Catch and log callback panics, returning fallback to Kodi.
 fn guard<R>(name: &str, fallback: R, f: impl FnOnce() -> R) -> R {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(result) => result,
@@ -108,10 +106,10 @@ fn guard<R>(name: &str, fallback: R, f: impl FnOnce() -> R) -> R {
     }
 }
 
-/// Kodi's first call after loading the library.
+/// Initialize the add-on when Kodi first calls the loaded library.
 ///
 /// # Safety
-/// `interface` is Kodi's `AddonGlobalInterface`.
+/// interface must point to a valid Kodi AddonGlobalInterface.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ADDON_Create(interface: *mut c_void) -> sys::ADDON_STATUS {
     guard("ADDON_Create", sys::ADDON_STATUS_PERMANENT_FAILURE, || unsafe {
@@ -123,7 +121,7 @@ pub unsafe extern "C" fn ADDON_Create(interface: *mut c_void) -> sys::ADDON_STAT
         }
         pin_library();
         INTERFACE.store(interface, Ordering::Release);
-        // Kodi hands this back to every call below; we keep no state in it.
+        // Kodi returns this instance marker to callbacks; it stores no add-on state.
         global.addonBase = interface.cast();
         to_addon.create = None;
         to_addon.destroy = Some(destroy);
@@ -135,7 +133,7 @@ pub unsafe extern "C" fn ADDON_Create(interface: *mut c_void) -> sys::ADDON_STAT
     })
 }
 
-/// Keeps this library mapped after Kodi's `dlclose`.
+/// Keep callback code mapped after Kodi calls dlclose.
 fn pin_library() {
     unsafe {
         let mut info: libc::Dl_info = std::mem::zeroed();
@@ -143,21 +141,21 @@ fn pin_library() {
             log(Level::Error, "oriel-display: cannot find the library to pin it");
             return;
         }
-        // A reference never released.
+        // Retain this loader reference for the lifetime of the process.
         if libc::dlopen(info.dli_fname, libc::RTLD_NOW | libc::RTLD_NOLOAD | libc::RTLD_NODELETE).is_null() {
             log(Level::Error, "oriel-display: cannot pin the library");
         }
     }
 }
 
-/// The API versions the library was built against, per type it uses. Kodi
-/// refuses the add-on unless they are at least Kodi's minimums.
+/// Report build-time API versions for used types. Kodi requires each version
+/// to meet its minimum supported version.
 #[unsafe(no_mangle)]
 pub extern "C" fn ADDON_GetTypeVersion(kind: c_int) -> *const c_char {
     type_version(kind, false)
 }
 
-/// The oldest API versions the library works with, per type it uses.
+/// Report the minimum compatible API version for each used type.
 #[unsafe(no_mangle)]
 pub extern "C" fn ADDON_GetTypeMinVersion(kind: c_int) -> *const c_char {
     type_version(kind, true)
@@ -168,7 +166,7 @@ fn type_version(kind: c_int, min: bool) -> *const c_char {
         Ok(sys::ADDON_GLOBAL_MAIN) => (sys::ADDON_GLOBAL_VERSION_MAIN, sys::ADDON_GLOBAL_VERSION_MAIN_MIN),
         Ok(sys::ADDON_GLOBAL_GUI) => (sys::ADDON_GLOBAL_VERSION_GUI, sys::ADDON_GLOBAL_VERSION_GUI_MIN),
         Ok(sys::ADDON_INSTANCE_VFS) => (sys::ADDON_INSTANCE_VERSION_VFS, sys::ADDON_INSTANCE_VERSION_VFS_MIN),
-        // Not used: Kodi skips the check for an empty version.
+        // An empty version tells Kodi to skip compatibility checks for unused types.
         _ => (b"\0", b"\0"),
     };
     (if min { minimum } else { version }).as_ptr().cast()
@@ -196,7 +194,7 @@ unsafe extern "C" fn create_instance(
         let Some(to_addon) = vfs.as_mut().and_then(|v| v.toAddon.as_mut()) else {
             return sys::ADDON_STATUS_PERMANENT_FAILURE;
         };
-        // Kodi checks the others for null before calling them.
+        // Kodi null-checks optional callbacks before calling them.
         to_addon.addonInstance = vfs.cast();
         to_addon.exists = Some(vfs_exists);
         to_addon.stat = Some(vfs_stat);
@@ -246,50 +244,49 @@ fn general_api() -> Option<&'static sys::AddonToKodiFuncTable_kodi_gui_general> 
     gui().and_then(|g| unsafe { g.general.as_ref() })
 }
 
-/// Kodi's active window.
+/// Return the active Kodi window id.
 pub fn current_window_id() -> i32 {
     general_api().and_then(|g| g.get_current_window_id).map_or(-1, |f| unsafe { f(base()) })
 }
 
-/// Kodi's topmost modal dialog, or `WINDOW_INVALID` (9999).
+/// Return the topmost modal dialog id or WINDOW_INVALID (9999).
 pub fn current_dialog_id() -> i32 {
     general_api().and_then(|g| g.get_current_window_dialog_id).map_or(-1, |f| unsafe { f(base()) })
 }
 
-/// Kodi's topmost modal dialog. Kodi refuses to activate a window while one
-/// is open.
+/// Detect a modal dialog that prevents Kodi from activating another window.
 pub fn modal_dialog() -> Option<i32> {
     Some(current_dialog_id()).filter(|id| !matches!(id, -1 | 9999))
 }
 
-/// What a window hears from Kodi, on Kodi's GUI thread.
+/// Window events delivered on Kodi's GUI thread.
 pub trait WindowEvents: Send + Sync {
-    /// The window is being shown (also again after a close).
+    /// Initialize a window when shown, including after reopening.
     fn init(&self, window: WindowRef);
-    /// True if the window handled the action; false lets Kodi handle it.
+    /// Return true to consume the action or false to let Kodi handle it.
     fn action(&self, window: WindowRef, action: u32) -> bool;
 }
 
-/// A window from the add-on's skin XML (resources/skins/Default/1080i).
+/// Own a Kodi window created from resources/skins/Default/1080i XML.
 pub struct Window {
     client: *mut Client,
 }
 
-/// What Kodi passes back to window callbacks.
+/// Callback state retained by Kodi for the window.
 struct Client {
     handle: *mut c_void,
     events: Box<dyn WindowEvents>,
 }
 
-// Kodi serialises window calls with its GUI lock.
+// Kodi's GUI lock serializes calls on these window handles.
 unsafe impl Send for Window {}
 unsafe impl Sync for Window {}
 
-/// A window as a callback sees it, or a window to call without holding it.
+/// Borrow a window handle for callbacks or calls without owning its lifetime.
 #[derive(Clone, Copy)]
 pub struct WindowRef(*mut c_void);
 
-// Kodi keeps the window until Kodi exits; its calls take Kodi's GUI lock.
+// Kodi owns the window until process exit and locks its GUI for window calls.
 unsafe impl Send for WindowRef {}
 unsafe impl Sync for WindowRef {}
 
@@ -322,13 +319,13 @@ impl Window {
         unsafe { (*self.client).handle }
     }
 
-    /// For calls without holding on to the window.
+    /// Borrow the window handle without retaining the owning wrapper.
     pub fn window_ref(&self) -> WindowRef {
         WindowRef(self.handle())
     }
 
-    /// Lets go without asking Kodi to destroy the window: after a reload Kodi
-    /// no longer knows our old handle for it.
+    /// Discard a handle without destroying the Kodi window; reload invalidates
+    /// handles from the previous add-on instance.
     pub fn abandon(self) {
         std::mem::forget(self);
     }
@@ -343,7 +340,7 @@ impl WindowRef {
         window_api().and_then(|a| a.close).is_some_and(|close| unsafe { close(base(), self.0) })
     }
 
-    /// For `$INFO[Window.Property(key)]` in the skin XML.
+    /// Set a property read by $INFO[Window.Property(key)] in skin XML.
     pub fn set_property(self, key: &str, value: &str) {
         let Some(set) = window_api().and_then(|a| a.set_property) else { return };
         let (key, value) = (c_string(key), c_string(value));
@@ -402,30 +399,29 @@ unsafe extern "C" fn on_context_button(_client: *mut c_void, _item: c_int, _butt
     false
 }
 
-/// Draws a `renderaddon` control, on Kodi's GUI thread with its GL context
-/// current. Kodi calls it on no other thread.
+/// Renderaddon callbacks run only on Kodi's GUI thread with its GL context current.
 pub trait Renderer {
-    /// The control's rectangle in screen pixels. False keeps it from drawing.
+    /// Initialize the control rectangle in screen pixels; false disables drawing.
     fn create(&mut self, x: i32, y: i32, width: i32, height: i32) -> bool;
     fn render(&mut self);
-    /// Kodi freed the control (the window closed).
+    /// Release control resources when Kodi closes its window.
     fn stop(&mut self);
-    /// Polled every GUI frame; true has Kodi draw the frame.
+    /// Return true from the per-frame dirty check to request drawing.
     fn dirty(&mut self) -> bool;
 }
 
-/// A renderer attached to a window's `renderaddon` control.
+/// Renderer attached to a window's renderaddon control.
 pub struct RenderControl {
     handle: *mut c_void,
     renderer: *mut Box<dyn Renderer>,
 }
 
-// Its renderer is only called and dropped on Kodi's GUI thread.
+// Renderer callbacks and destruction are confined to Kodi's GUI thread.
 unsafe impl Send for RenderControl {}
 
 impl RenderControl {
-    /// Kodi calls `create` from inside this, so call it on the GUI thread
-    /// (from [`WindowEvents::init`]).
+    /// Call from [`WindowEvents::init`] on the GUI thread because attaching
+    /// invokes the renderer's create callback synchronously.
     pub fn attach(window: WindowRef, control: i32, renderer: Box<dyn Renderer>) -> Option<RenderControl> {
         let get = window_api()?.get_control_render_addon?;
         let set_callbacks = rendering_api()?.set_callbacks?;

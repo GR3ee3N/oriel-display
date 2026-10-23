@@ -1,7 +1,6 @@
-//! Which of the producer's buffers the add-on holds, and the `drawn` and
-//! `released` replies it owes for them (docs/protocol.md, "Rules"): each
-//! `frame` gets one of each. The book holds no GL objects; surface.rs does
-//! the GL work and tells it what happened.
+//! Track producer buffer ownership and the drawn/released replies owed for
+//! each frame (docs/protocol.md, "Buffer lifecycle"). surface.rs owns GL
+//! objects and reports draw and release progress to this bookkeeping state.
 
 use std::collections::HashMap;
 
@@ -13,19 +12,19 @@ pub enum Reply {
 
 #[derive(Default)]
 pub struct Book {
-    /// The imported buffers, and whether each was drawn since its `frame`.
+    /// Imported ids and whether their selected frame has been drawn.
     buffers: HashMap<u32, bool>,
-    /// The buffer the GUI frames draw.
+    /// Buffer selected for drawing in GUI frames.
     current: Option<u32>,
-    /// Buffers no longer shown, which the GPU may still read.
+    /// Superseded buffers awaiting GPU completion.
     retiring: Vec<u32>,
-    /// The newest `frame`, not shown yet.
+    /// Latest frame pending selection for drawing.
     next: Option<u32>,
 }
 
 impl Book {
-    /// A `frame` from the producer. One that came before it and was never
-    /// shown is replaced: never drawn, never read by the GPU.
+    /// Queue a frame, acknowledging any superseded pending frame as drawn and
+    /// released without submitting it to the GPU.
     pub fn frame(&mut self, id: u32) -> Vec<Reply> {
         match self.next.replace(id) {
             Some(old) => vec![Reply::Drawn(old), Reply::Released(old)],
@@ -37,18 +36,17 @@ impl Book {
         self.next.is_some()
     }
 
-    /// The frame to show, taken together with the buffers sent before it.
+    /// Take the pending frame alongside the preceding buffer import requests.
     pub fn take_next(&mut self) -> Option<u32> {
         self.next.take()
     }
 
-    /// The producer disconnected: its pending frame needs no answer.
+    /// Discard the pending frame without replying after producer disconnection.
     pub fn disconnected(&mut self) {
         self.next = None;
     }
 
-    /// Forgets every buffer without replies, for a producer that is gone or
-    /// an add-on that is unloading.
+    /// Clear buffer state without replies during producer disconnection or unload.
     pub fn clear(&mut self) {
         self.buffers.clear();
         self.current = None;
@@ -59,7 +57,7 @@ impl Book {
         self.buffers.insert(id, false);
     }
 
-    /// The producer dropped the buffer.
+    /// Remove a buffer forgotten by the producer without issuing replies.
     pub fn forget(&mut self, id: u32) {
         self.buffers.remove(&id);
         self.retiring.retain(|&r| r != id);
@@ -68,9 +66,9 @@ impl Book {
         }
     }
 
-    /// Shows the frame taken with `take_next`. The buffer shown before goes
-    /// to retiring. A frame for a buffer the add-on doesn't have (sent before
-    /// a reset reached the producer) is never drawn: it goes straight back.
+    /// Select the frame from take_next and retire the previous buffer.
+    /// Acknowledge unknown ids immediately without drawing; these can arrive
+    /// before the producer receives a reset.
     pub fn show(&mut self, next: Option<u32>) -> Vec<Reply> {
         let Some(next) = next else { return Vec::new() };
         let Some(drawn) = self.buffers.get_mut(&next) else {
@@ -90,7 +88,7 @@ impl Book {
         self.current
     }
 
-    /// The current buffer went into a GUI frame: `drawn`, the first time.
+    /// Acknowledge the first GUI draw of the selected frame.
     pub fn drew(&mut self) -> Vec<Reply> {
         let Some(id) = self.current else { return Vec::new() };
         match self.buffers.get_mut(&id) {
@@ -102,8 +100,7 @@ impl Book {
         }
     }
 
-    /// Releases the retiring buffers for which `done` says the GPU no longer
-    /// reads them.
+    /// Release retired buffers once done confirms GPU reads have finished.
     pub fn retire(&mut self, mut done: impl FnMut(u32) -> bool) -> Vec<Reply> {
         let mut replies = Vec::new();
         self.retiring.retain(|&id| {
@@ -116,8 +113,8 @@ impl Book {
         replies
     }
 
-    /// No window is open: every buffer goes back to the producer, and a
-    /// frame not shown yet is answered as if replaced.
+    /// Release held buffers when all windows close and acknowledge the pending
+    /// frame as superseded before clearing imports.
     pub fn drop_buffers(&mut self) -> Vec<Reply> {
         let held = self.current.take().into_iter().chain(self.retiring.drain(..));
         let mut replies: Vec<Reply> = held.map(Reply::Released).collect();
@@ -133,12 +130,12 @@ impl Book {
 mod tests {
     use super::*;
 
-    /// A book driven the way the add-on drives it, recording every reply.
+    /// Simulate add-on bookkeeping transitions and record all replies.
     #[derive(Default)]
     struct Run {
         book: Book,
         replies: Vec<Reply>,
-        /// Buffers the GPU still reads.
+        /// Buffer ids whose GPU reads are still pending.
         busy: Vec<u32>,
     }
 
@@ -148,7 +145,7 @@ mod tests {
             self.replies.extend(replies);
         }
 
-        /// One GUI frame: take what the producer sent, show it and draw it.
+        /// Simulate one GUI frame with imports, removals, selection and drawing.
         fn render(&mut self, imported: &[u32], forget: &[u32], reset: bool) {
             let next = self.book.take_next();
             if reset {
@@ -167,7 +164,7 @@ mod tests {
             self.busy.extend(self.book.current());
         }
 
-        /// The next frame's dirty check, with the GPU done.
+        /// Simulate retirement during a dirty check after GPU completion.
         fn retire(&mut self) {
             self.busy.clear();
             let busy = &self.busy;
@@ -184,7 +181,7 @@ mod tests {
             self.replies.iter().filter(|&&r| r == reply).count()
         }
 
-        /// Each of `ids`' frames got one `drawn`, then one `released`.
+        /// Assert exactly one drawn reply followed by one released reply for each id.
         fn answered(&self, ids: &[u32]) {
             for &id in ids {
                 assert_eq!(self.count(Reply::Drawn(id)), 1, "drawn {id}: {:?}", self.replies);

@@ -1,10 +1,10 @@
-//! The library Kodi loads (`vfs.oriel.display.so`). It loads the add-on from
-//! `lib/oriel-display-<build>.so` next to it and passes Kodi's calls on.
+//! Load lib/oriel-display-<build>.so beside vfs.oriel.display.so and forward
+//! Kodi entry-point calls to it.
 //!
-//! The add-on stays in memory after Kodi unloads it, since Kodi's windows can
-//! still call it. A library loaded again from the same path would then be
-//! that old copy, so each build has a name of its own: an update loads new
-//! code, and Kodi unloads only this loader.
+//! Window callbacks can outlive add-on unload, so the implementation library
+//! stays mapped. Give each build a unique filename so updates load their own
+//! code rather than reusing the mapped library at the same path. Kodi unloads
+//! this loader independently of the retained implementation.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
 use std::os::unix::ffi::OsStrExt;
@@ -22,7 +22,7 @@ struct Addon {
 
 static ADDON: OnceLock<Option<Addon>> = OnceLock::new();
 
-/// `ADDON_STATUS_PERMANENT_FAILURE`.
+/// Kodi status code for permanent add-on startup failure.
 const FAILURE: c_uint = 5;
 
 fn here() -> Option<PathBuf> {
@@ -34,7 +34,7 @@ fn here() -> Option<PathBuf> {
     Some(Path::new(std::ffi::OsStr::from_bytes(path.to_bytes())).parent()?.to_path_buf())
 }
 
-/// The one `lib/oriel-display-*.so`; none or several is a broken install.
+/// Require exactly one lib/oriel-display-*.so implementation in the installation.
 fn find(dir: &Path) -> Option<PathBuf> {
     let lib = dir.join("lib");
     let mut builds: Vec<PathBuf> = match std::fs::read_dir(&lib) {
@@ -88,7 +88,7 @@ fn addon() -> Option<&'static Addon> {
 }
 
 /// # Safety
-/// `interface` is Kodi's `AddonGlobalInterface`.
+/// interface must point to a valid Kodi AddonGlobalInterface.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ADDON_Create(interface: *mut c_void) -> c_uint {
     match addon() {

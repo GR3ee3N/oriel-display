@@ -1,4 +1,4 @@
-/* What build/bindgen.sh generates bindings for. */
+/* Kodi headers used by build/bindgen.sh to generate the bindings. */
 #include <kodi/versions.h>
 #include <kodi/c-api/addon_base.h>
 #include <kodi/c-api/addon-instance/vfs.h>

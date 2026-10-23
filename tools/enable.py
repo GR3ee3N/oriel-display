@@ -2,7 +2,7 @@
 
     enable.py ADDON [--reload]
 
---reload disables an enabled add-on first, so Kodi loads its new library.
+--reload disables an active add-on before enabling it to load the installed library.
 """
 import codecs
 import json
@@ -51,7 +51,7 @@ def enable(addon, reload=False):
             try:
                 kodi.call("Addons.SetAddonEnabled", {"addonid": addon, "enabled": False})
             except RuntimeError:
-                pass  # Not registered yet: a first install.
+                pass  # Allow the first installation to finish registering with Kodi.
         deadline = time.monotonic() + 10
         while True:
             try:
@@ -60,7 +60,7 @@ def enable(addon, reload=False):
                     return
                 kodi.call("Addons.SetAddonEnabled", {"addonid": addon, "enabled": True})
             except RuntimeError:
-                pass  # UpdateLocalAddons may not have registered the add-on yet.
+                pass  # Registration after UpdateLocalAddons can still be pending.
             if time.monotonic() >= deadline:
                 raise RuntimeError(f"Kodi did not enable {addon}")
             time.sleep(0.25)

@@ -34,7 +34,7 @@ ORIEL_CACHE="$REPO/.cache" "$WORK/oriel-display/build/container.sh" build/releas
 if [[ $RELEASE = true ]]; then
     [[ $(gh release view "$TAG" --json isDraft -q .isDraft) = true ]] \
         || { echo "$TAG is no longer a draft; check the release before retrying" >&2; exit 2; }
-    # Keep the previous draft until its replacement has passed every check.
+    # Retain the existing draft until the replacement passes validation.
     gh release delete "$TAG" --yes --cleanup-tag
     if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then git tag -d "$TAG" >/dev/null; fi
 fi

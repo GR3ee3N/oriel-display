@@ -1,6 +1,5 @@
-//! The GLES 3 and EGL calls the page needs, made in Kodi's context. Kodi's
-//! process has the Mali libraries loaded; extensions come from
-//! `eglGetProcAddress`.
+//! GLES 3 and EGL calls used for page rendering in Kodi's GL context.
+//! Kodi loads the Mali libraries; resolve extension functions through eglGetProcAddress.
 
 #![allow(non_snake_case)]
 
@@ -55,7 +54,7 @@ pub const EGL_LINUX_DMA_BUF_EXT: c_uint = 0x3270;
 pub const EGL_LINUX_DRM_FOURCC_EXT: GLint = 0x3271;
 pub const EGL_SYNC_FENCE_KHR: c_uint = 0x30F9;
 pub const EGL_CONDITION_SATISFIED_KHR: GLint = 0x30F6;
-/// FD, OFFSET, PITCH, MODIFIER_LO, MODIFIER_HI for planes 0 to 3.
+/// EGL attributes for planes 0–3: fd, offset, pitch and modifier low/high words.
 pub const EGL_DMA_BUF_PLANE: [[GLint; 5]; 4] = [
     [0x3272, 0x3273, 0x3274, 0x3443, 0x3444],
     [0x3275, 0x3276, 0x3277, 0x3445, 0x3446],
@@ -110,7 +109,7 @@ unsafe extern "C" {
     pub fn glDeleteQueries(n: GLint, ids: *const GLuint);
 }
 
-/// Extension entry points, looked up in Kodi's context.
+/// Extension functions resolved with Kodi's GL context current.
 pub struct Ext {
     pub create_image: unsafe extern "C" fn(EGLDisplay, *mut c_void, c_uint, *mut c_void, *const GLint) -> EGLImage,
     pub destroy_image: unsafe extern "C" fn(EGLDisplay, EGLImage) -> c_uint,
@@ -118,7 +117,7 @@ pub struct Ext {
     pub create_sync: unsafe extern "C" fn(EGLDisplay, c_uint, *const GLint) -> EGLSync,
     pub client_wait_sync: unsafe extern "C" fn(EGLDisplay, EGLSync, GLint, u64) -> GLint,
     pub destroy_sync: unsafe extern "C" fn(EGLDisplay, EGLSync) -> c_uint,
-    /// EXT_disjoint_timer_query, for measuring; absent on some drivers.
+    /// Optional EXT_disjoint_timer_query functions for GPU timing.
     pub timer: Option<Timer>,
 }
 
@@ -132,7 +131,7 @@ pub struct Timer {
 
 fn proc<T>(name: &CStr) -> Option<T> {
     let p = unsafe { eglGetProcAddress(name.as_ptr()) };
-    // Function pointers are pointer-sized.
+    // EGL function addresses and function pointers have matching pointer size.
     (!p.is_null()).then(|| unsafe { std::mem::transmute_copy(&p) })
 }
 
@@ -158,7 +157,7 @@ impl Ext {
     }
 }
 
-/// A linked program, or the compiler's or linker's complaint.
+/// Compile and link shaders, returning the program id or compilation/link error.
 pub unsafe fn program(vertex: &CStr, fragment: &CStr) -> Result<GLuint, String> {
     unsafe {
         let program = glCreateProgram();

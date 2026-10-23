@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Drives vfs.oriel.display's control socket on the box, for testing; prints
-what the add-on sends. Steps run in order:
+"""Send ordered test commands to the display control socket on the box.
+
+Print each response from the add-on:
 
     control.py open-browse[=MARK] | open-player | close-browse | close-player
                | started | draw-on | draw-off | wait=SECONDS ...

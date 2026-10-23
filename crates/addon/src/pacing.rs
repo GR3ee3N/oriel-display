@@ -1,14 +1,11 @@
-//! Holds Kodi's GUI thread until the display's next refresh before a GUI
-//! frame that follows one with the page in the browse window.
+//! Pace browse GUI frames against the active display's vblank.
 //!
-//! CoreELEC's Kodi submits each GUI frame's page flip without waiting for
-//! it to land, and gives the buffer still on screen back for rendering. It
-//! waits for the flip only when it presents the next frame, after rendering
-//! it, so that frame can draw into the buffer being scanned out, which
-//! tears. So the browse window's dirty callback, which runs before Kodi
-//! renders, waits here for the next vblank of the active CRTC unless one has
-//! passed since the flip. The vblanks come from a DRM file of our own (no
-//! master, nothing submitted).
+//! CoreELEC Kodi submits page flips asynchronously and returns the buffer
+//! still on screen for rendering. It waits for a flip only when presenting
+//! the next frame, after drawing it, allowing writes into a buffer still
+//! being scanned out. The browse dirty callback waits before Kodi renders
+//! unless the preceding page flip has already completed. Read vblank events
+//! through a separate DRM descriptor without becoming DRM master or submitting frames.
 
 use crate::kodi::{error, info};
 use std::fs::{File, OpenOptions};
@@ -19,24 +16,24 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-/// Pace GUI frames (`orieldisplay://pacing-1/go`), or not (`-0`).
+/// Enable display pacing with orieldisplay://pacing-1/go; -0 disables it.
 pub static ENABLED: AtomicBool = AtomicBool::new(true);
 
-/// After a failed wait, the next try at finding the display's refresh.
+/// Delay before reopening the display after a failed vblank wait.
 const RETRY: Duration = Duration::from_secs(5);
-/// Longer than one refresh at 23.976 Hz.
+/// Allow more than one refresh period at 23.976 Hz before timing out.
 const TIMEOUT_MS: i32 = 50;
 
 #[derive(Default)]
 struct Pacing {
     vblank: Option<Vblank>,
     retry_at: Option<Instant>,
-    /// A GUI frame drew the page in the browse window since the last wait.
+    /// A browse page draw has occurred since the last pacing wait.
     pending: bool,
-    /// The vblank count when it did. Its flip goes in after the draw, so it
-    /// has landed once two more vblanks have passed.
+    /// Vblank sequence observed during drawing. The flip is submitted after
+    /// drawing, so two later vblanks confirm it has completed.
     drawn_at: Option<u64>,
-    /// Failed since the last wait that worked, as while the display is off.
+    /// A failure has occurred since the last successful wait, such as display power-off.
     failing: bool,
 }
 
@@ -47,7 +44,7 @@ fn with<R>(f: impl FnOnce(&mut Pacing) -> R) -> R {
     f(pacing.get_or_insert_with(Pacing::default))
 }
 
-/// A GUI frame drew the page in the browse window.
+/// Mark a browse draw and capture its current vblank sequence.
 pub fn drew() {
     with(|p| {
         p.pending = true;
@@ -55,7 +52,7 @@ pub fn drew() {
     });
 }
 
-/// In the browse window's dirty callback, before Kodi renders the frame.
+/// Wait from the browse dirty callback before Kodi begins rendering.
 pub fn wait() {
     with(|p| {
         if !std::mem::take(&mut p.pending) || !ENABLED.load(Ordering::Relaxed) {
@@ -84,13 +81,13 @@ pub fn wait() {
     });
 }
 
-/// The add-on is going.
+/// Reset pacing resources during add-on shutdown.
 pub fn stop() {
     with(|p| *p = Pacing::default());
 }
 
 impl Pacing {
-    /// Logged once, until a wait works again.
+    /// Log the first consecutive failure and suppress repeats until a wait succeeds.
     fn failed(&mut self, e: io::Error) {
         if !std::mem::replace(&mut self.failing, true) {
             error!("oriel-display: waiting for the display's refresh failed: {e}");
@@ -100,7 +97,7 @@ impl Pacing {
     }
 }
 
-// The kernel's DRM structures and ioctls (drm.h, drm_mode.h).
+// Match the kernel DRM structures and ioctl numbers in drm.h and drm_mode.h.
 
 #[repr(C)]
 #[derive(Default)]
@@ -143,18 +140,18 @@ const DRM_IOCTL_CRTC_QUEUE_SEQUENCE: libc::c_ulong = 0xc018_643c;
 const DRM_CRTC_SEQUENCE_RELATIVE: u32 = 1;
 const DRM_CRTC_SEQUENCE_NEXT_ON_MISS: u32 = 2;
 const DRM_EVENT_CRTC_SEQUENCE: u32 = 3;
-/// drm_event (type, length), user_data, time_ns, sequence.
+/// Sequence event layout: drm_event (type, length), user_data, time_ns, sequence.
 const EVENT_SIZE: usize = 32;
 
 struct Vblank {
     file: File,
     crtc: u32,
-    /// Matches each event to its request, so a late one doesn't end a later wait.
+    /// Match events to requests so delayed events cannot complete a later wait.
     request: u64,
 }
 
 impl Vblank {
-    /// The first active CRTC of the first DRM card that has one.
+    /// Select the first active CRTC found while scanning DRM cards.
     fn open() -> io::Result<Vblank> {
         let mut cards: Vec<_> = std::fs::read_dir("/dev/dri")?
             .flatten()
@@ -180,7 +177,7 @@ impl Vblank {
         Err(io::Error::other("no active display"))
     }
 
-    /// The CRTC's vblank count.
+    /// Read the active CRTC vblank sequence number.
     fn sequence(&self) -> io::Result<u64> {
         let mut sequence = CrtcGetSequence { crtc_id: self.crtc, ..Default::default() };
         if unsafe { libc::ioctl(self.file.as_raw_fd(), DRM_IOCTL_CRTC_GET_SEQUENCE, &mut sequence) } != 0 {
@@ -192,7 +189,7 @@ impl Vblank {
         Ok(sequence.sequence)
     }
 
-    /// Returns at the next vblank.
+    /// Wait for the requested next-vblank event within TIMEOUT_MS.
     fn wait(&mut self) -> io::Result<()> {
         self.request += 1;
         let mut queue = CrtcQueueSequence {

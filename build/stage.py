@@ -1,9 +1,10 @@
-"""Writes the add-on's addon.xml to stdout, filled in for a release.
+"""Render release versions into addon.xml and write it to stdout.
 
     build/stage.py TEMPLATE VERSIONS_H VERSION
 
-VERSIONS_H is the dev-kit's kodi/versions.h. Each @NAME@ is a version from it
-(the API minimums Kodi checks against the imports), and @VERSION@ is ours.
+Read Kodi API versions from the dev-kit's kodi/versions.h. Replace @NAME@
+with the matching header version and @VERSION@ with the add-on release
+version. Kodi checks imported API minimums against its supported versions.
 """
 import re
 import sys

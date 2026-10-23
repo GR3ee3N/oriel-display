@@ -1,6 +1,6 @@
-//! The producer's socket (docs/protocol.md). A thread accepts one producer at
-//! a time and queues what it sends for the render callback; replies go out
-//! from whichever thread has them.
+//! Receive producer packets and queue work for the GUI render callback.
+//! Serve one producer at a time (docs/protocol.md). Queue frame replies and
+//! visibility updates for a separate sender thread.
 
 use crate::book::{Book, Reply};
 use crate::kodi::{error, info};
@@ -10,7 +10,7 @@ use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
-/// A buffer the producer sent, not imported yet. Its fds close with it.
+/// Pending buffer import; dropping it closes the received plane descriptors.
 pub struct Incoming {
     pub desc: protocol::Msg,
     pub fds: Vec<OwnedFd>,
@@ -20,7 +20,7 @@ pub struct Incoming {
 pub struct Queue {
     pub buffers: Vec<Incoming>,
     pub forget: Vec<u32>,
-    /// The producer is gone: drop everything.
+    /// Clear imports after producer disconnection.
     pub reset: bool,
     pub book: Book,
     pub frames_in: u64,
@@ -30,14 +30,14 @@ pub struct Queue {
 static QUEUE: LazyLock<Mutex<Queue>> = LazyLock::new(Mutex::default);
 static SERVER: Server =
     Server::new(Protocol { name: "producer", socket: protocol::SOCKET, thread: "oriel-display", hello, serve, gone });
-/// Replies go out from a thread of their own: the send wakes the producer,
-/// which can preempt the sending thread, and that must not be Kodi's GUI thread.
+/// Send replies off the GUI thread because waking the producer can preempt
+/// the sending thread and delay Kodi rendering.
 static OUTBOX: Mutex<Outbox> = Mutex::new(Outbox { sender: None, shown: false });
 
 struct Outbox {
     sender: Option<Sender<protocol::Msg>>,
-    /// Whether the page is drawn. Every change is queued under the same lock,
-    /// so the producer hears them in order and its last word is the current one.
+    /// Serialize visibility changes under this lock so the last queued update
+    /// always represents current page visibility.
     shown: bool,
 }
 
@@ -66,7 +66,7 @@ pub fn send(kind: u32, id: u32) {
     lock(&OUTBOX).send(protocol::Msg::new(kind, id));
 }
 
-/// Sends the book's replies, after the queue's lock is let go.
+/// Queue bookkeeping replies after releasing the producer queue lock.
 pub fn reply(replies: Vec<Reply>) {
     for reply in replies {
         match reply {
@@ -112,12 +112,12 @@ pub fn start() {
 }
 
 pub fn stop() {
-    // Ends the sender thread.
+    // Dropping the channel sender lets the sender thread exit.
     lock(&OUTBOX).sender.take();
     SERVER.stop();
 }
 
-/// The producer's first message must be a hello with our version.
+/// Accept only an initial hello with the supported producer protocol version.
 fn hello(fd: RawFd) -> bool {
     match sockets::receive(fd) {
         Some((bytes, _)) if bytes.len() == protocol::SIZE => {
@@ -135,7 +135,7 @@ fn hello(fd: RawFd) -> bool {
 }
 
 fn serve(fd: RawFd) {
-    // Through the outbox, behind any change already queued for this producer.
+    // Queue initial visibility after any updates already pending for this producer.
     {
         let outbox = lock(&OUTBOX);
         outbox.send(visibility(outbox.shown));

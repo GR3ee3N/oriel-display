@@ -1,8 +1,7 @@
-//! What the windows' render controls draw: the producer's newest buffer, or
-//! a test pattern, as one premultiplied full-screen triangle in Kodi's GUI
-//! frame. Both windows draw the same surface, so the imported buffers stay
-//! when the page moves from one window to the other. All of it runs on
-//! Kodi's GUI thread, in Kodi's GL context.
+//! Draw the selected producer buffer or test pattern as a premultiplied
+//! full-screen triangle in Kodi's GUI frame. Both windows share the surface,
+//! retaining imports across window transitions. Access GL resources only on
+//! Kodi's GUI thread with Kodi's GL context current.
 
 use crate::gl::*;
 use crate::kodi::{Renderer, debug, error, info};
@@ -17,11 +16,11 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-/// Redraw every GUI frame (for measuring), or only for new frames.
+/// Force per-frame redraws for diagnostics; otherwise redraw on page updates.
 pub static ALWAYS_DIRTY: AtomicBool = AtomicBool::new(false);
-/// The test pattern instead of the producer's buffers.
+/// Select the diagnostic test pattern as the drawing source.
 pub static PATTERN_MODE: AtomicBool = AtomicBool::new(false);
-/// Time the draw on the GPU (EXT_disjoint_timer_query).
+/// Enable GPU timing through EXT_disjoint_timer_query.
 pub static TIMING: AtomicBool = AtomicBool::new(false);
 
 const VERTEX: &std::ffi::CStr = c"#version 300 es
@@ -85,20 +84,19 @@ pub struct Surface {
     clock: Instant,
     start: f64,
     gl: Option<Gl>,
-    /// The imported buffers' GL objects; the queue's book keeps what the
-    /// producer is owed for them.
+    /// Own imported GL resources; producer bookkeeping tracks their outstanding replies.
     textures: HashMap<u32, Texture>,
     query_next: usize,
     query_read: usize,
     stats: Stats,
     logged_dirty: bool,
-    /// Draw the next frame even without a new page frame (a window opened).
+    /// Force a draw after events such as window opening, even without a page update.
     redraw: bool,
 }
 
 static SURFACE: Mutex<Option<Surface>> = Mutex::new(None);
 
-// Its EGL and GL handles are only used on Kodi's GUI thread.
+// Send is safe because all EGL/GL handle access remains on Kodi's GUI thread.
 unsafe impl Send for Surface {}
 
 fn with<R>(f: impl FnOnce(&mut Surface) -> R) -> R {
@@ -106,18 +104,18 @@ fn with<R>(f: impl FnOnce(&mut Surface) -> R) -> R {
     f(surface.get_or_insert_with(Surface::new))
 }
 
-/// Has the next GUI frame draw the page, as when a window opens.
+/// Request a page draw in the next GUI frame.
 pub fn redraw() {
     with(|s| s.redraw = true);
 }
 
-/// No window is open: every buffer goes back to the producer, which sends
-/// them again when one opens. GUI thread only.
+/// Release imports on the GUI thread after all windows close. The producer
+/// must resend buffers before showing them again.
 pub fn drop_buffers() {
     with(Surface::drop_buffers);
 }
 
-/// A window's render control.
+/// Render control for one browse or player window.
 pub struct Page {
     which: Which,
 }
@@ -136,15 +134,15 @@ impl Renderer for Page {
 
     fn dirty(&mut self) -> bool {
         windows::on_gui_thread();
-        // Over video, Kodi hands decoded frames to the display from this
-        // thread, so only the browse window holds it.
+        // Pace only browsing; during video playback this thread also submits
+        // decoded frames and must not wait for GUI pacing.
         if windows::drawing() && self.which == Which::Browse {
             pacing::wait();
         }
         with(|s| {
             s.retire();
-            // Over HDR video Kodi clears its GUI in every frame it renders and
-            // keeps only what it redraws, so the player draws the page each frame.
+            // Redraw every player frame because HDR GUI composition retains only
+            // content drawn in that frame.
             windows::drawing() && (s.dirty() || self.which == Which::Player)
         })
     }
@@ -197,11 +195,11 @@ impl Surface {
         queue.book.pending() || !queue.buffers.is_empty() || !queue.forget.is_empty() || queue.reset
     }
 
-    /// True if it drew.
+    /// Return true only when a page or test-pattern draw was submitted.
     fn render(&mut self) -> bool {
         let t0 = self.now();
-        // With front-to-back rendering Kodi calls us in its opaque pass too
-        // (depth writes on); the page is translucent, so it goes in the other.
+        // Depth writes identify Kodi's opaque front-to-back pass. Draw the
+        // translucent page only in the back-to-front pass.
         let mut depth_writes = 0u8;
         unsafe { glGetBooleanv(GL_DEPTH_WRITEMASK, &mut depth_writes) };
         if depth_writes != 0 {
@@ -223,7 +221,7 @@ impl Surface {
 
     fn drop_buffers(&mut self) {
         let Some(gl) = self.gl.as_ref() else { return };
-        // The GPU may still read the last frame's buffer.
+        // Finish pending GPU reads before freeing imported buffers.
         unsafe { glFinish() };
         for (_, texture) in self.textures.drain() {
             free(gl, texture);
@@ -239,7 +237,7 @@ impl Surface {
         info!("oriel-display: buffers dropped");
     }
 
-    /// Everything back to Kodi, before the add-on goes.
+    /// Free surface GL resources before add-on unload.
     fn free(&mut self) {
         info!("oriel-display: freeing the surface");
         if let Some(gl) = self.gl.take() {
@@ -328,7 +326,7 @@ impl Surface {
         self.gl = Some(gl);
     }
 
-    /// Draws one pass with Kodi's state saved and put back. True if anything was drawn.
+    /// Save and restore Kodi GL state around one pass; return whether a draw was submitted.
     unsafe fn draw(&mut self, gl: &Gl, current: Option<u32>, t0: f64) -> bool {
         unsafe {
             let get = |name| {
@@ -357,8 +355,8 @@ impl Surface {
                 (timer.begin)(GL_TIME_ELAPSED_EXT, gl.queries[self.query_next % QUERIES]);
             }
 
-            // Kodi renders a pass per dirty region, scissored to it; its state
-            // block turns the scissor test off around us but leaves the box.
+            // Restore scissor testing for Kodi's current dirty region; its state block
+            // disables the test around add-on rendering but preserves the rectangle.
             glEnable(GL_SCISSOR_TEST);
             glEnable(GL_BLEND);
             glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
@@ -410,7 +408,7 @@ impl Surface {
         }
     }
 
-    /// The buffer's id once imported.
+    /// Import a dma-buf and return its id, or None if EGL image creation fails.
     fn import(&mut self, gl: &Gl, incoming: Incoming) -> Option<u32> {
         let d = incoming.desc;
         let mut attrs = vec![EGL_WIDTH, d.width, EGL_HEIGHT, d.height, EGL_LINUX_DRM_FOURCC_EXT, d.format as GLint];
@@ -432,7 +430,7 @@ impl Surface {
                 attrs.as_ptr(),
             )
         };
-        // EGL has its own references now.
+        // EGL retains its own descriptor references after image creation.
         drop(incoming.fds);
         if image.is_null() {
             error!(
@@ -481,8 +479,8 @@ impl Surface {
         Some(d.id)
     }
 
-    /// Imports and drops what the producer sent and shows its newest
-    /// frame. Returns the buffer to draw.
+    /// Apply queued imports, removals and resets, then select the latest frame
+    /// and return the current buffer id.
     fn take_from_link(&mut self, gl: &Gl) -> Option<u32> {
         let (buffers, forget, next, reset) = {
             let mut queue = producer::queue();
@@ -519,7 +517,7 @@ impl Surface {
         current
     }
 
-    /// Buffers no longer shown go back once the GPU is done with them.
+    /// Release retired buffers after their EGL fences signal GPU completion.
     fn retire(&mut self) {
         let Some(gl) = self.gl.as_ref() else { return };
         let textures = &mut self.textures;

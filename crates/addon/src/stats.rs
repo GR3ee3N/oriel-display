@@ -1,4 +1,4 @@
-//! The drawing's statistics, logged to Kodi's debug log every 10 s.
+//! Aggregate rendering statistics for Kodi debug logs in 10 s intervals.
 
 use crate::gl::GLint;
 use crate::kodi::debug;
@@ -13,13 +13,13 @@ pub struct Stats {
     last_render: f64,
     frame_start: f64,
     frames: u32,
-    /// Renders less than 3 ms after the one before: the same frame.
+    /// Count passes within 3 ms of the previous render as part of the same GUI frame.
     passes: u32,
-    /// Skipped: Kodi's front-to-back pass.
+    /// Count skipped opaque front-to-back passes.
     opaque_passes: u32,
     interval_sum: f64,
     interval_max: f64,
-    /// Intervals over 1.5 vblanks.
+    /// Count frame intervals longer than 1.5 display refresh periods.
     late: u32,
     cpu_sum: f64,
     cpu_max: f64,
@@ -28,15 +28,15 @@ pub struct Stats {
     gpu_n: u32,
     drawn_new: u32,
     last_new: f64,
-    /// A new page frame more than 1.5 vblanks after the last one.
+    /// Count gaps between new page frames longer than 1.5 display refresh periods.
     new_gaps: u32,
     imports: u32,
-    /// Bound while drawing: non-zero in Kodi's HDR GUI composite.
+    /// Framebuffer bound during drawing; HDR GUI composition uses a nonzero id.
     fbo: GLint,
     viewport: [GLint; 4],
 }
 
-/// The output's refresh rate, from CoreELEC's mode name ("1080p23hz").
+/// Read output refresh rate from a CoreELEC mode name such as "1080p23hz".
 fn refresh() -> f64 {
     let mode = std::fs::read_to_string("/sys/class/display/mode").unwrap_or_default();
     let hz: u32 = mode
@@ -54,7 +54,7 @@ fn refresh() -> f64 {
 }
 
 impl Stats {
-    /// Counts from `now`, once the surface has its GL objects.
+    /// Start collecting after surface GL initialization at timestamp now.
     pub fn start(&mut self, now: f64) {
         self.since = now;
         self.refresh = refresh();
@@ -68,20 +68,20 @@ impl Stats {
         self.imports += 1;
     }
 
-    /// A draw's time on the GPU.
+    /// Record GPU draw duration in nanoseconds.
     pub fn gpu(&mut self, ns: u64) {
         self.gpu_sum += ns;
         self.gpu_max = self.gpu_max.max(ns);
         self.gpu_n += 1;
     }
 
-    /// The framebuffer and viewport Kodi had bound for the draw.
+    /// Record the framebuffer and viewport supplied by Kodi for drawing.
     pub fn target(&mut self, fbo: GLint, viewport: [GLint; 4]) {
         self.fbo = fbo;
         self.viewport = viewport;
     }
 
-    /// A page frame was drawn for the first time, in the render at `t`.
+    /// Record the first draw of a new page frame at timestamp t.
     pub fn new_frame(&mut self, t: f64) {
         self.drawn_new += 1;
         if self.last_new > 0.0 && t - self.last_new > 1.5 / self.refresh {
@@ -90,7 +90,7 @@ impl Stats {
         self.last_new = t;
     }
 
-    /// A render from `t0` to `t1`. Every 10 s, logs and starts over.
+    /// Record a render interval and log/reset counters after 10 s.
     pub fn render(&mut self, t0: f64, t1: f64) {
         let s = self;
         if s.last_render > 0.0 {

@@ -1,4 +1,4 @@
-"""Stages the protocol crate without workspace dependencies."""
+"""Stage a standalone protocol crate with workspace package fields resolved."""
 import json
 from pathlib import Path
 import shutil

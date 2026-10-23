@@ -1,19 +1,18 @@
-//! vfs.oriel.display: Kodi windows that draw an Oriel app's page in Kodi's
-//! own GUI frame. The framework's Python drives the windows over the control
-//! socket, and its shell sends WebKit's buffers over the producer socket
-//! (docs/protocol.md).
+//! Draw Oriel pages in Kodi GUI windows. Framework Python controls windows
+//! through the control socket; the framework shell sends WebKit buffers
+//! through the producer socket. See docs/protocol.md for both protocols.
 //!
-//! A `kodi.vfs` add-on, because Kodi loads those at start and keeps them. A
-//! path under `orieldisplay://` reaches it from Python (`xbmcvfs.exists`) or
-//! JSON-RPC (`Files.GetFileDetails`), for testing; it needs a file part, or
-//! xbmcvfs takes it for a directory:
+//! Use kodi.vfs so Kodi loads the add-on at startup and keeps it available.
+//! Debug URLs are accessible through Python xbmcvfs.exists or JSON-RPC
+//! Files.GetFileDetails. Include a file component so xbmcvfs treats the URL
+//! as a file request:
 //!
-//! - `orieldisplay://pattern-1/go` draws a test pattern instead of the page (`-0`: the page)
-//! - `orieldisplay://dirty-1/go` redraws every GUI frame (`-0`: only for new frames)
-//! - `orieldisplay://timing-1/go` times the draw on the GPU (`-0`: stops)
-//! - `orieldisplay://pacing-0/go` stops pacing GUI frames to the display (`-1`: paces them)
+//! - `orieldisplay://pattern-1/go`: draw a test pattern; `-0` selects page buffers.
+//! - `orieldisplay://dirty-1/go`: redraw every GUI frame; `-0` redraws for page updates.
+//! - `orieldisplay://timing-1/go`: measure GPU draw time; `-0` disables timing.
+//! - `orieldisplay://pacing-0/go`: disable display pacing; `-1` enables it.
 //!
-//! The add-on's frame statistics go to Kodi's debug log every 10 s.
+//! Log frame statistics to Kodi's debug log every 10 s.
 
 mod book;
 mod control;
@@ -30,7 +29,7 @@ use kodi::info;
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 
-/// Kodi can unload the add-on on one thread while loading it on another.
+/// Serialize lifecycle transitions because Kodi can load and unload on different threads.
 static LIFECYCLE: Mutex<()> = Mutex::new(());
 
 fn hooks() -> kodi::Hooks {

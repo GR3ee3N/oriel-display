@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Black under the page, with the app's mark until the page's first frame. -->
+<!-- Draw black beneath the page and retain the startup mark until its first frame. -->
 <window>
   <controls>
     <control type="image">

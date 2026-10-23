@@ -1,79 +1,94 @@
 # Oriel display
 
-Oriel display is a Kodi add-on that draws web pages inside Kodi's own GUI,
-both while browsing and over playing video. It displays the buffers WebKit
-renders for the [Oriel framework](https://github.com/GR3ee3N/oriel-framework).
-Apps use the framework, not this add-on directly.
+Oriel display draws web pages in Kodi's GUI while browsing and over video.
+It imports buffers rendered by WebKit for the
+[Oriel framework](https://github.com/GR3ee3N/oriel-framework). Apps use the
+framework API to control the page and playback.
 
 ## Status
 
 > [!WARNING]
-> **Oriel display is highly experimental.** It is a personal project, tested
-> on only a few boxes, and it relies on CoreELEC and Kodi internals that are
-> outside its control. Any update to those can break it. Use it at your own
-> risk.
+> **Experimental software.** CoreELEC or Kodi updates can break it.
 
 No support is provided.
 
+## Hardware
+
+Requires an Amlogic device with a Mali GPU running CoreELEC 22
+(Kodi 22, 64-bit). Tested on:
+
+- Ugoos AM9 Pro (S905X5M, Mali-G310)
+- Ugoos AM6B+ (S922X, Mali-G52)
+
+Other devices and CoreELEC versions have not been tested.
+
 ## Installation
 
-Apps install it as a dependency of the framework through the
-[Oriel repository](https://github.com/GR3ee3N/oriel-repository). To install
-it by hand, download `vfs.oriel.display-<version>.zip` from the
-[releases page](https://github.com/GR3ee3N/oriel-display/releases), enable
-**Settings → System → Add-ons → Unknown sources** in Kodi, and use
-**Add-ons → Install from zip file**.
+For manual installation, download `vfs.oriel.display-<version>.zip` from
+the [releases page](https://github.com/GR3ee3N/oriel-display/releases), then:
 
-## How it works
+1. In Kodi, enable **Settings → System → Add-ons → Unknown sources**.
+2. Go to **Add-ons → Install from zip file** and select the downloaded ZIP.
 
-The add-on gives an Oriel app two Kodi windows, each with a `renderaddon`
-control that draws the page: **browse**, a window of its own with the app's
-mark until the page starts, and **player**, a dialog over Kodi's fullscreen
-video. Both draw the same imported buffers; the player redraws in every GUI
-frame, the browse window when the page changes.
+Apps can install this add-on as a dependency through the
+[Oriel repository](https://github.com/GR3ee3N/oriel-repository).
 
-Two unix sockets connect it to the framework
-([docs/protocol.md](docs/protocol.md)): the framework's shell sends WebKit's
-buffers as dma-bufs over the producer socket, and its Python opens and
-closes the windows and hears the keys over the control socket.
+## Rendering and control
 
-## Hardware and Kodi
+Each app uses two Kodi windows with a `renderaddon` control:
 
-The add-on targets Amlogic devices with a Mali GPU running CoreELEC 22
-(Kodi 22, 64-bit). It has been tested on:
+- **browse**: a standalone window that shows the app's startup mark until
+  the page reports its first frame.
+- **player**: a dialog over Kodi's fullscreen video.
 
-- Ugoos AM6B+ (S922X, Mali-G52), Kodi 22.0-BETA2
-- Ugoos AM9 Pro (S905X5M, Mali-G310), Kodi 22.0-RC1
+Both windows draw the same imported buffers. The player redraws the page
+in every GUI frame; the browse window redraws when the page changes.
 
-## Building
+Two Unix sockets connect the add-on to the framework. The shell sends
+WebKit dma-bufs over the producer socket. Python opens and closes windows
+and receives keys over the control socket. [docs/protocol.md](docs/protocol.md)
+defines both protocols.
 
-Building requires Linux on x86_64 or ARM64 and a running Docker
-installation. Run from the repository root:
+## Checks and builds
+
+Use Linux on x86_64 or ARM64 with Docker running. From the repository root:
 
 ```sh
 tools/check.sh
 tools/build.sh
 ```
 
-`check.sh` runs ShellCheck, the Python tests, rustfmt, clippy and the Rust
-unit tests. `build.sh` compiles the ARM64 library, checks it against
-`build/box.env`, and stages the add-on in `.cache/runtime/vfs.oriel.display`
-and the protocol crate in `.cache/runtime/protocol`. Pass that directory as
-`DISPLAY_DEV` to a framework build when developing both projects.
+`tools/check.sh` runs ShellCheck, Python tests, rustfmt, Clippy and Rust
+unit tests. `tools/build.sh` compiles the ARM64 libraries and validates
+them against `build/box.env`. It stages the add-on in
+`.cache/runtime/vfs.oriel.display` and the protocol crate in
+`.cache/runtime/protocol`. Set `DISPLAY_DEV` to the staged protocol directory
+when building the framework against local display changes.
 
-Deploy to a CoreELEC device with `BOX=root@coreelec.local tools/deploy.sh`;
-a running add-on is reloaded. On the box, `tools/control.py` speaks the
-control protocol for testing. See `crates/addon/src/lib.rs` for the
-`orieldisplay://` debug switches.
+## Device testing
 
-## Releasing
+After building, deploy to a CoreELEC device over SSH:
 
-Bump `VERSION` in `build/versions.env`, commit, then build and publish from
-a clean working tree with the GitHub CLI (`gh`):
+```sh
+BOX=root@coreelec.local tools/deploy.sh
+```
+
+Set `BOX` to the device's SSH address. Deployment requires SSH, rsync and
+Kodi's JSON-RPC TCP service. The script waits for add-on registration and
+verifies activation on each installation attempt.
+
+Deployment reloads a running add-on, closing its windows. On the box,
+`tools/control.py` sends control protocol messages for testing.
+`crates/addon/src/lib.rs` documents the `orieldisplay://` debug switches.
+
+## Releases
+
+Bump `VERSION` in `build/versions.env` and commit. From a clean working tree,
+with the GitHub CLI (`gh`) authenticated to publish releases, run:
 
 ```sh
 tools/release.sh "Release notes"
 ```
 
-This uploads the add-on zip, `addons.xml`, the protocol crate, the vendored
-source archive, and checksums as a draft release under `v<version>`.
+The script uploads the add-on ZIP, `addons.xml`, protocol crate, vendored
+source archive and checksums as a draft release under `v<version>`.

@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The page over Kodi's video. -->
+<!-- Overlay the page on Kodi fullscreen video. -->
 <window>
   <controls>
-    <!-- Invisible, but drawn by Kodi. With HDR output Kodi composites its GUI
-         only in frames where it drew something itself; the page alone
-         doesn't count. -->
+    <!-- A transparent Kodi image triggers HDR GUI composition. Kodi requires
+         a draw from its own controls to composite the GUI; the renderaddon
+         page draw alone does not trigger it. -->
     <control type="image">
       <left>0</left><top>0</top><width>1</width><height>1</height>
       <texture colordiffuse="00FFFFFF">$INFO[Window.Property(white)]</texture>

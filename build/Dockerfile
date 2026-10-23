@@ -1,7 +1,7 @@
 FROM debian:13.1-slim@sha256:a347fd7510ee31a84387619a492ad6c8eb0af2f2682b916ff3e643eb076f925a
 ARG DEBIAN_SNAPSHOT
-# The add-on links EGL and GLES from Debian; the box's Mali drivers provide them at runtime.
-# The native ones let its unit tests link on the build machine.
+# Link against Debian EGL/GLES libraries; use the box's Mali implementation at runtime.
+# Native EGL/GLES packages satisfy unit-test linker dependencies on the build host.
 RUN rm -f /etc/apt/sources.list.d/* && \
     printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s/ trixie main\n' "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list && \
     arm64=; cross=; \

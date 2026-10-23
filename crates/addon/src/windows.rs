@@ -1,10 +1,9 @@
-//! The two Kodi windows the page lives in: the browse window, active while
-//! the app browses, and the player dialog, over Kodi's fullscreen video.
-//! The control client opens and closes them; Kodi's GUI thread runs their
-//! callbacks.
+//! Manage the standalone browse window and the player dialog over Kodi video.
+//! The control client requests visibility changes; Kodi's GUI thread runs
+//! the window callbacks.
 //!
-//! Never call Kodi while holding `STATE`: Kodi's GUI thread takes it in our
-//! callbacks while it holds Kodi's GUI lock.
+//! Never call Kodi while holding STATE. Window callbacks acquire STATE while
+//! already holding Kodi's GUI lock, so reversing the lock order can deadlock.
 
 use crate::control;
 use crate::kodi::{self, RenderControl, Window, WindowEvents, WindowRef, info};
@@ -17,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-/// The render control in both skin files.
+/// Shared renderaddon control id in both skin XML files.
 const CONTROL: i32 = 10;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -45,8 +44,8 @@ impl Which {
         }
     }
 
-    /// The player is a dialog over Kodi's fullscreen video; browsing is a
-    /// window of its own, which Kodi leaves when playback starts.
+    /// Player uses a dialog over fullscreen video; browse uses a standalone
+    /// window that Kodi leaves when playback starts.
     fn dialog(self) -> bool {
         self == Which::Player
     }
@@ -55,7 +54,7 @@ impl Which {
 struct State {
     windows: [Option<Window>; 2],
     open: [bool; 2],
-    /// Kodi's id for each window, from when it last opened.
+    /// Kodi window ids reported during the most recent opening.
     ids: [i32; 2],
 }
 
@@ -68,21 +67,20 @@ impl State {
 static STATE: Mutex<State> = Mutex::new(State::new());
 static DRAW: AtomicBool = AtomicBool::new(true);
 static UNLOADING: AtomicBool = AtomicBool::new(false);
-/// Asks Kodi's GUI thread to close the windows. It tries until they are
-/// closed, and `CLOSED` signals that.
+/// Request repeated GUI-thread closure attempts; CLOSED signals completion.
 static CLOSE_REQUEST: AtomicBool = AtomicBool::new(false);
 static CLOSED: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
-/// When the GUI thread last asked the windows to close.
+/// Timestamp of the latest GUI-thread closure attempt.
 static CLOSE_TRIED: Mutex<Option<Instant>> = Mutex::new(None);
-/// Before it asks again.
+/// Minimum interval between closure attempts.
 const CLOSE_RETRY: Duration = Duration::from_millis(200);
 
 fn state() -> MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Keys the page gets; any other action stays with Kodi (volume, screenshots,
-/// keymap commands).
+/// Actions delivered as page keys; leave volume, screenshots and keymap
+/// commands to Kodi.
 const PAGE_KEYS: &[RangeInclusive<u32>] = &[
     sys::ADDON_ACTION_MOVE_LEFT..=sys::ADDON_ACTION_SELECT_ITEM,
     sys::ADDON_ACTION_PREVIOUS_MENU..=sys::ADDON_ACTION_PREV_ITEM,
@@ -94,7 +92,7 @@ const PAGE_KEYS: &[RangeInclusive<u32>] = &[
     sys::ADDON_ACTION_PLAYER_PLAYPAUSE..=sys::ADDON_ACTION_PLAYER_PLAYPAUSE,
 ];
 
-/// During playback Kodi also acts on these.
+/// Playback actions also handled by Kodi while the player dialog is open.
 const PLAYER_KEYS: &[u32] = &[
     sys::ADDON_ACTION_PAUSE,
     sys::ADDON_ACTION_PLAYER_PLAY,
@@ -105,7 +103,7 @@ const PLAYER_KEYS: &[u32] = &[
     sys::ADDON_ACTION_PREV_ITEM,
 ];
 
-/// True keeps the action from Kodi. The client hears every action either way.
+/// Return true to consume the Kodi action; report every action to the client regardless.
 fn consumed(which: Which, action: u32) -> bool {
     if which == Which::Player && PLAYER_KEYS.contains(&action) {
         return false;
@@ -119,8 +117,8 @@ fn now() -> f64 {
     ts.tv_sec as f64 + ts.tv_nsec as f64 / 1e9
 }
 
-/// After a load: windows from an earlier load belong to an add-on Kodi has
-/// destroyed, so they are dropped without telling Kodi.
+/// Discard stale handles on load without calling Kodi; the prior add-on
+/// instance that owned them has already been destroyed.
 pub fn reset() {
     let old = std::mem::replace(&mut *state(), State::new());
     for window in old.windows.into_iter().flatten() {
@@ -135,7 +133,7 @@ pub fn unloading() -> bool {
     UNLOADING.load(Ordering::Acquire)
 }
 
-/// Whether the page is drawn at all (`draw` from the client).
+/// Apply the control client's draw setting to page visibility.
 pub fn drawing() -> bool {
     DRAW.load(Ordering::Acquire) && !unloading()
 }
@@ -145,7 +143,7 @@ fn update_shown() {
     producer::set_shown(open && drawing());
 }
 
-/// Opens (shows) a window, creating it the first time.
+/// Create the window on first use and request that Kodi show it.
 pub fn open(which: Which, mark: Option<&str>) {
     let exists = state().windows[which.index()].is_some();
     if !exists {
@@ -153,7 +151,7 @@ pub fn open(which: Which, mark: Option<&str>) {
             kodi::error!("oriel-display: cannot create the {} window", which.name());
             return;
         };
-        // Kodi doesn't find the add-on's own media by name in its windows.
+        // Use absolute media paths because Kodi window lookup does not resolve add-on assets.
         if let Some(path) = kodi::addon_path() {
             window.window_ref().set_property("white", &format!("{path}/resources/skins/Default/media/white.png"));
         }
@@ -176,15 +174,14 @@ pub fn close(which: Which) {
     }
 }
 
-/// Has Kodi's GUI thread close the open windows from its next frame on, until
-/// they are closed: a close from another thread does nothing while Kodi goes
-/// to sleep.
+/// Schedule closure from the next GUI frame and retry until complete.
+/// Calls from other threads cannot close windows during Kodi sleep transitions.
 pub fn request_close() {
     *CLOSE_TRIED.lock().unwrap_or_else(|e| e.into_inner()) = None;
     CLOSE_REQUEST.store(true, Ordering::Release);
 }
 
-/// The page drew its first frame: the browse window drops the app's mark.
+/// Hide the browse startup mark after the page reports its first frame.
 pub fn started() {
     let window = state().windows[Which::Browse.index()].as_ref().map(Window::window_ref);
     if let Some(window) = window {
@@ -200,7 +197,7 @@ pub fn set_draw(draw: bool) {
     update_shown();
 }
 
-/// A window's control was freed: the window closed. On Kodi's GUI thread.
+/// Handle render-control destruction as window closure on Kodi's GUI thread.
 pub fn closed(which: Which) {
     let any_open = {
         let mut state = state();
@@ -215,13 +212,13 @@ pub fn closed(which: Which) {
     control::send(json!({"window": which.name(), "state": "closed"}));
 }
 
-/// Called from each GUI frame (the controls' dirty check), on Kodi's GUI
-/// thread, where closing a window doesn't wait on that thread.
+/// Process closure requests during the GUI-thread dirty check, where window
+/// closure cannot block waiting for the GUI thread itself.
 pub fn on_gui_thread() {
     if !CLOSE_REQUEST.swap(false, Ordering::AcqRel) {
         return;
     }
-    // Another app may have connected since the request.
+    // Cancel stale closure requests if a new control client has connected.
     let (windows, player): (Vec<(Which, WindowRef)>, Option<i32>) = if !unloading() && control::connected() {
         (Vec::new(), None)
     } else {
@@ -238,12 +235,11 @@ pub fn on_gui_thread() {
         signal_closed();
         return;
     }
-    // Until `closed` hears the last one go.
+    // Keep closure pending until closed reports the last window gone.
     CLOSE_REQUEST.store(true, Ordering::Release);
-    // Closing the browse window activates the window before it. Kodi refuses
-    // that while a modal dialog is open, as while it goes to sleep, and the
-    // window then has none to go back to; so it waits for the dialog. The
-    // player closes first in the same pass, and Kodi skips a closing dialog.
+    // Browse closure restores the previous window, which Kodi cannot activate
+    // while a modal dialog is open. Wait for that dialog to close. Close the
+    // player first; Kodi excludes a closing dialog from the modal check.
     let modal = kodi::modal_dialog().is_some_and(|id| Some(id) != player);
     let windows: Vec<WindowRef> =
         windows.into_iter().filter(|&(which, _)| which.dialog() || !modal).map(|(_, window)| window).collect();
@@ -262,22 +258,21 @@ pub fn on_gui_thread() {
     }
 }
 
-/// The last window closed: a close request is done with.
+/// Complete the pending request after the last window closes.
 fn close_done() {
     CLOSE_REQUEST.store(false, Ordering::Release);
     signal_closed();
 }
 
-/// For `unload`: no window is left to close, or an app has them again.
+/// Let unload proceed when windows are closed or owned by a new client.
 fn signal_closed() {
     let (done, signal) = &CLOSED;
     *done.lock().unwrap_or_else(|e| e.into_inner()) = true;
     signal.notify_all();
 }
 
-/// Before Kodi unloads the add-on: the windows close, the client hears it,
-/// and the threads end. Kodi may hold locks its GUI thread needs, so the
-/// wait for the windows is bounded.
+/// Request window closure, notify the client and stop socket threads before
+/// unload. Bound the closure wait because Kodi may hold locks needed by its GUI thread.
 pub fn unload() {
     UNLOADING.store(true, Ordering::Release);
     let open = state().open.iter().any(|&o| o);
@@ -314,7 +309,7 @@ impl WindowEvents for Events {
         let id = if self.which.dialog() { kodi::current_dialog_id() } else { kodi::current_window_id() };
         info!("oriel-display: {} window open, Kodi window {id}", self.which.name());
         let mut control = self.control.lock().unwrap_or_else(|e| e.into_inner());
-        // Kodi drops the control's callbacks when the window closes.
+        // Clear the render control after Kodi removes its callbacks on closure.
         *control = None;
         *control = RenderControl::attach(window, CONTROL, Box::new(Page::new(self.which)));
         drop(control);
@@ -325,7 +320,7 @@ impl WindowEvents for Events {
         }
         surface::redraw();
         update_shown();
-        // Kodi went back to a window of an app that has gone.
+        // Close windows restored by Kodi history when their app client has disconnected.
         if !control::connected() {
             info!("oriel-display: no app for the {} window, closing it", self.which.name());
             request_close();

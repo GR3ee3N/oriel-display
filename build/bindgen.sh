@@ -1,9 +1,9 @@
 #!/bin/bash
-# build/bindgen.sh DEVKIT_INCLUDE OUTPUT: Kodi's C API for crates/kodi-sys.
+# Generate Kodi C API bindings for crates/kodi-sys: DEVKIT_INCLUDE OUTPUT.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 INCLUDE=$1 OUTPUT=$2
-# bindgen formats its output with the pinned toolchain's rustfmt.
+# Use the pinned Rust toolchain to format bindgen output.
 rustup toolchain install "$(sed -n 's/channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal --component rustfmt >&2
 TYPES='AddonGlobalInterface|KODI_ADDON_INSTANCE_STRUCT|AddonInstance_VFSEntry|AddonToKodiFuncTable_kodi_gui'
 TYPES+='|AddonToKodiFuncTable_kodi_gui_window|AddonToKodiFuncTable_kodi_gui_control_rendering|AddonToKodiFuncTable_kodi_gui_general'

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- build/compile.sh fills in the versions: ours from build/versions.env, Kodi's
-     add-on API minimums from the pinned dev-kit. -->
+<!-- build/compile.sh replaces the release version from build/versions.env
+     and Kodi API minimums from the pinned dev-kit. -->
 <addon id="vfs.oriel.display" name="Oriel display" version="@VERSION@" provider-name="Oriel">
   <requires>
     <import addon="kodi.binary.global.main" version="@ADDON_GLOBAL_VERSION_MAIN_MIN@"/>

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Prints the directory of Kodi's add-on dev-kit at KODI_DEVKIT_REF, downloading it once.
+# Print the cached Kodi dev-kit directory for KODI_DEVKIT_REF, downloading it if absent.
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO"
@@ -8,7 +8,7 @@ source build/versions.env
 [[ $KODI_DEVKIT_REF =~ ^[0-9a-f]{40}$ ]] || { echo "KODI_DEVKIT_REF must be a full commit" >&2; exit 2; }
 DEVKIT=$REPO/.cache/devkit/$KODI_DEVKIT_REF
 if [[ ! -d $DEVKIT/include ]]; then
-    # Only the dev-kit headers and their license are kept from Kodi's source.
+    # Retain only dev-kit headers and their license from the Kodi source archive.
     ARCHIVE=$REPO/.cache/devkit/xbmc-$KODI_DEVKIT_REF.tar.gz
     curl -fsSL --create-dirs -o "$ARCHIVE.part" "https://github.com/CoreELEC/xbmc/archive/$KODI_DEVKIT_REF.tar.gz"
     rm -rf "$DEVKIT.part"

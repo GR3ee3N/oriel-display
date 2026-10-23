@@ -1,4 +1,4 @@
-//! `SOCK_SEQPACKET` sockets in the abstract namespace, for both clients.
+//! Serve producer and control clients through Linux abstract SOCK_SEQPACKET sockets.
 
 use crate::kodi::{error, info};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -6,31 +6,31 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-/// How long a client has for its hello before the next one may connect.
+/// Handshake deadline before releasing the socket for another client.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// What a server does with each client it accepts.
+/// Per-client handshake, service and disconnection callbacks.
 pub struct Protocol {
-    /// The client, for logs: "producer".
+    /// Client label used in logs, such as "producer".
     pub name: &'static str,
     pub socket: &'static [u8],
     pub thread: &'static str,
-    /// Reads the client's hello and answers it; false refuses the client.
+    /// Validate and answer the client hello; return false to refuse it.
     pub hello: fn(RawFd) -> bool,
-    /// Serves the client until it disconnects.
+    /// Process messages until client disconnection.
     pub serve: fn(RawFd),
-    /// After the client's connection closed.
+    /// Clean up after the client connection closes.
     pub gone: fn(),
 }
 
-/// A socket served by a thread of its own, one client at a time.
+/// Dedicated socket thread serving one client at a time.
 pub struct Server {
     protocol: Protocol,
     listener: Mutex<Option<OwnedFd>>,
     thread: Mutex<Option<JoinHandle<()>>>,
-    /// Senders on other threads hold it while they send.
+    /// Shared ownership keeps the client descriptor open during sends from other threads.
     client: Mutex<Option<Arc<OwnedFd>>>,
-    /// A client not past its hello yet, for `stop` to wake.
+    /// Handshaking descriptor that stop must wake during shutdown.
     greeting: Mutex<Option<RawFd>>,
 }
 
@@ -65,8 +65,8 @@ impl Server {
         }
     }
 
-    /// Wakes the thread and waits for it to end, which frees the socket's
-    /// name for the next load.
+    /// Wake socket operations and wait for the thread to release the abstract
+    /// socket name before another add-on load.
     pub fn stop(&self) {
         let listener = lock(&self.listener).take();
         if let Some(listener) = &listener {
@@ -78,7 +78,7 @@ impl Server {
         if let Some(fd) = *lock(&self.greeting) {
             unsafe { libc::shutdown(fd, libc::SHUT_RDWR) };
         }
-        // The thread may still use the listener's fd.
+        // Keep the listener descriptor open until the thread has stopped using it.
         if !join(lock(&self.thread).take()) {
             error!("oriel-display: the {} thread did not end", self.protocol.name);
         }
@@ -89,7 +89,7 @@ impl Server {
         lock(&self.client).is_some()
     }
 
-    /// The connected client's fd, open until the returned handle drops.
+    /// Retain the client descriptor until the returned shared handle is dropped.
     pub fn client(&self) -> Option<Arc<OwnedFd>> {
         lock(&self.client).clone()
     }
@@ -116,12 +116,11 @@ impl Server {
         }
     }
 
-    /// The client's hello, with a deadline: one that stays silent would keep
-    /// every other client out.
+    /// Bound handshake reads so a silent client cannot block all later clients.
     fn greet(&self, fd: RawFd) -> bool {
         {
             let mut greeting = lock(&self.greeting);
-            // `stop` takes the listener before it looks for a greeting.
+            // Match shutdown ordering: stop removes the listener before checking the greeting.
             if lock(&self.listener).is_none() {
                 return false;
             }
@@ -129,13 +128,13 @@ impl Server {
         }
         let greeted =
             receive_timeout(fd, HELLO_TIMEOUT) && (self.protocol.hello)(fd) && receive_timeout(fd, Duration::ZERO);
-        // Before the fd closes, so `stop` never shuts down a reused one.
+        // Clear the greeting before closing its fd so stop cannot shut down a reused descriptor.
         *lock(&self.greeting) = None;
         greeted
     }
 }
 
-/// Bounds how long a receive on `fd` waits; zero waits for ever.
+/// Set the receive timeout; zero permits an indefinite wait.
 fn receive_timeout(fd: RawFd, timeout: Duration) -> bool {
     let tv = libc::timeval {
         tv_sec: timeout.as_secs() as libc::time_t,
@@ -145,9 +144,8 @@ fn receive_timeout(fd: RawFd, timeout: Duration) -> bool {
     unsafe { libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVTIMEO, (&raw const tv).cast(), len) == 0 }
 }
 
-/// Waits up to half a second for a socket's thread, woken by a shutdown, to
-/// end. A thread still inside `accept` keeps the socket, and so its name,
-/// alive: Kodi can load the add-on again right after unloading it.
+/// Wait up to 0.5 s for shutdown to release the socket thread. A thread
+/// inside accept retains the abstract socket name and can block an immediate reload.
 fn join(thread: Option<JoinHandle<()>>) -> bool {
     let Some(thread) = thread else { return true };
     let deadline = Instant::now() + Duration::from_millis(500);
@@ -161,7 +159,7 @@ fn join(thread: Option<JoinHandle<()>>) -> bool {
     true
 }
 
-/// A listening socket at `name` (after the leading NUL: no file to clean up).
+/// Bind a Linux abstract socket named by the bytes after the implicit leading NUL.
 fn listen(name: &[u8]) -> std::io::Result<OwnedFd> {
     let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0) };
     if fd < 0 {
@@ -183,10 +181,10 @@ fn listen(name: &[u8]) -> std::io::Result<OwnedFd> {
     Ok(socket)
 }
 
-/// The next packet and the fds that came with it; None once the peer is gone.
+/// Receive a packet and owned ancillary descriptors; return None on disconnect or error.
 pub fn receive(fd: RawFd) -> Option<(Vec<u8>, Vec<OwnedFd>)> {
     let mut bytes = vec![0u8; 4096];
-    let mut control = [0u64; 8]; // room for CMSG_SPACE(4 fds), aligned
+    let mut control = [0u64; 8]; // Aligned storage for CMSG_SPACE(4 fds).
     let mut iov = libc::iovec { iov_base: bytes.as_mut_ptr().cast(), iov_len: bytes.len() };
     let mut header: libc::msghdr = unsafe { std::mem::zeroed() };
     header.msg_iov = &mut iov;

@@ -1,10 +1,9 @@
-"""Checks the add-on's libraries: architecture, requirements, entry points.
+"""Validate add-on library architecture, dependencies and exported entry points.
 
     build/check-library.py BOX_ENV LIBRARY...
 
-Kodi's process on the box must provide every library and symbol version it
-needs (BOX_ENV says what CoreELEC has), and Kodi finds a binary add-on by its
-ADDON_* exports.
+Required libraries and symbol versions must match CoreELEC's BOX_ENV
+contract. Kodi loads the add-on through its ADDON_* exports.
 """
 from pathlib import Path
 import re
@@ -27,7 +26,7 @@ def problems(dynamic, versions, symbols, env):
     system = re.compile(target["LIBRARIES"])
     found = [f"needs {name}, which the box does not provide"
              for name in re.findall(r"\(NEEDED\).*\[(.*?)\]", dynamic) if not system.fullmatch(name)]
-    # Only requirements, not the versions a library itself exports.
+    # Inspect required symbol versions without including versions exported by the library.
     needs = versions.partition("Version needs section")[2]
     for name, required in re.findall(r"\b(GLIBC|GLIBCXX|CXXABI|GCC)_([0-9]+(?:\.[0-9]+)*)\b", needs):
         if version(required) > version(target[name]):

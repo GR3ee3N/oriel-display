@@ -1,4 +1,4 @@
-"""Packages the add-on with its licenses and sources, and the protocol crate.
+"""Package the add-on, licenses, source archive and standalone protocol crate.
 
     build/package.py COMMIT SOURCE_TAR
 """
@@ -61,13 +61,13 @@ def package(runtime, licenses, source, destination, version, devkit_ref):
     (addon / "SOURCE.txt").write_text(url + "\n")
     zip_name = f"{ID}-{version}.zip"
     zip_tree(addon, files / zip_name)
-    # The framework's shell builds against this.
+    # Publish the standalone protocol crate for framework shell builds.
     with tarfile.open(files / f"oriel-display-{version}-protocol.tar.xz", "w:xz") as archive:
         archive.add(runtime / "protocol", arcname="protocol")
     shutil.copytree(licenses, source / "licenses")
     with tarfile.open(files / f"{source.name}.tar.xz", "w:xz") as archive:
         archive.add(source, arcname=source.name)
-    # Kodi's index is served from the latest release alongside the zip it names.
+    # Publish the Kodi index beside its referenced ZIP in the latest release.
     addons = ET.Element("addons")
     element = ET.fromstring((addon / "addon.xml").read_bytes())
     ET.SubElement(element.find('extension[@point="xbmc.addon.metadata"]'), "path").text = zip_name
@@ -105,7 +105,7 @@ def main():
     licenses = destination / "licenses"
     licenses.mkdir()
     shutil.copy(REPO / ".cache/devkit" / devkit_ref / "LICENSES/GPL-2.0-or-later", licenses / "kodi-dev-kit-GPL-2.0-or-later.txt")
-    # The standard library is linked into the add-on, with its own third-party code.
+    # Include licenses for third-party code in the statically linked Rust standard library.
     rust = Path(subprocess.check_output(["rustc", "--print", "sysroot"], text=True, cwd=REPO).strip())
     shutil.copytree(rust / "share/doc/rust", licenses / "rust", ignore=shutil.ignore_patterns("README.md"))
     for crate in sorted(vendor.iterdir()):
@@ -116,7 +116,7 @@ def main():
             shutil.copy(file, licenses / "cargo" / crate.name / file.name)
 
     package(REPO / ".cache/runtime", licenses, source, destination, version, devkit_ref)
-    # tools/release.sh publishes only packages of the commit it releases.
+    # Record the source commit so tools/release.sh can verify package provenance.
     (destination / "COMMIT").write_text(commit + "\n")
     for leftover in (destination / "packages", source, licenses):
         shutil.rmtree(leftover)
