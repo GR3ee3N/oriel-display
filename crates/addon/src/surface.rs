@@ -408,7 +408,7 @@ impl Surface {
         }
     }
 
-    /// Import a dma-buf and return its id, or None if EGL image creation fails.
+    /// Import a dma-buf and return its id, or None if the import or texture bind fails.
     fn import(&mut self, gl: &Gl, incoming: Incoming) -> Option<u32> {
         let d = incoming.desc;
         let mut attrs = vec![EGL_WIDTH, d.width, EGL_HEIGHT, d.height, EGL_LINUX_DRM_FOURCC_EXT, d.format as GLint];
@@ -444,7 +444,7 @@ impl Surface {
             );
             return None;
         }
-        let (texture, failed) = unsafe {
+        let (texture, error) = unsafe {
             while glGetError() != GL_NO_ERROR {}
             let mut bound = 0;
             glGetIntegerv(GL_TEXTURE_BINDING_2D, &mut bound);
@@ -457,19 +457,16 @@ impl Surface {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
             glBindTexture(GL_TEXTURE_2D, bound as GLuint);
-            (texture, glGetError() != GL_NO_ERROR)
+            (texture, glGetError())
         };
+        if error != GL_NO_ERROR {
+            error!("oriel-display: binding buffer {} to texture failed: {error:#x}", d.id);
+            free(gl, Texture { image, texture, fence: std::ptr::null_mut() });
+            return None;
+        }
         info!(
-            "oriel-display: imported buffer {} {}x{} fourcc {:#x} mod {:#x} planes {} stride {} -> texture {}{}",
-            d.id,
-            d.width,
-            d.height,
-            d.format,
-            d.modifier,
-            d.planes,
-            d.strides[0],
-            texture,
-            if failed { " (GL error)" } else { "" }
+            "oriel-display: imported buffer {} {}x{} fourcc {:#x} mod {:#x} planes {} stride {} -> texture {}",
+            d.id, d.width, d.height, d.format, d.modifier, d.planes, d.strides[0], texture
         );
         self.stats.import();
         let texture = Texture { image, texture, fence: std::ptr::null_mut() };
