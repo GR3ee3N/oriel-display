@@ -90,6 +90,7 @@ pub struct Surface {
     query_read: usize,
     stats: Stats,
     logged_dirty: bool,
+    logged_fence: bool,
     /// Force a draw after events such as window opening, even without a page update.
     redraw: bool,
 }
@@ -172,6 +173,7 @@ impl Surface {
             query_read: 0,
             stats: Stats::default(),
             logged_dirty: false,
+            logged_fence: false,
             redraw: true,
         }
     }
@@ -379,6 +381,13 @@ impl Surface {
                     (gl.ext.destroy_sync)(gl.display, page.fence);
                 }
                 page.fence = (gl.ext.create_sync)(gl.display, EGL_SYNC_FENCE_KHR, std::ptr::null());
+                if page.fence.is_null() {
+                    // Without a fence, retire() would release this buffer while the GPU still reads it.
+                    if !std::mem::replace(&mut self.logged_fence, true) {
+                        error!("oriel-display: read fence failed: {:#x}; waiting for the GPU instead", eglGetError());
+                    }
+                    glFinish();
+                }
                 let replies = producer::queue().book.drew();
                 if !replies.is_empty() {
                     self.stats.new_frame(t0);
