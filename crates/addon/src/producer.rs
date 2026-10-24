@@ -1,14 +1,15 @@
 //! Receive producer packets and queue work for the GUI render callback.
 //! Serve one producer at a time (docs/protocol.md). Queue frame replies and
-//! visibility updates for a separate sender thread.
+//! visibility updates for a separate sender thread, which waits while the
+//! producer's socket is full.
 
 use crate::book::{Book, Reply};
 use crate::kodi::{error, info};
 use crate::sockets::{self, Protocol, Server};
 use oriel_display_protocol::{self as protocol, kind};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
-use std::sync::mpsc::{Sender, channel};
-use std::sync::{LazyLock, Mutex, MutexGuard};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 /// Pending buffer import; dropping it closes the received plane descriptors.
 pub struct Incoming {
@@ -34,17 +35,24 @@ static SERVER: Server =
 /// the sending thread and delay Kodi rendering.
 static OUTBOX: Mutex<Outbox> = Mutex::new(Outbox { sender: None, shown: false });
 
+/// A message bound to the connection that was current when it was queued.
+type Outgoing = (Arc<OwnedFd>, protocol::Msg);
+
 struct Outbox {
-    sender: Option<Sender<protocol::Msg>>,
+    sender: Option<Sender<Outgoing>>,
     /// Serialize visibility changes under this lock so the last queued update
     /// always represents current page visibility.
     shown: bool,
 }
 
 impl Outbox {
+    /// Drop messages queued with no producer connected; a new producer
+    /// receives the current visibility when it connects.
     fn send(&self, msg: protocol::Msg) {
-        if let Some(sender) = &self.sender {
-            let _ = sender.send(msg);
+        if let Some(sender) = &self.sender
+            && let Some(client) = SERVER.client()
+        {
+            let _ = sender.send((client, msg));
         }
     }
 }
@@ -58,8 +66,7 @@ pub fn queue() -> MutexGuard<'static, Queue> {
 }
 
 fn send_to(fd: RawFd, msg: protocol::Msg) {
-    let bytes = msg.to_bytes();
-    unsafe { libc::send(fd, bytes.as_ptr().cast(), bytes.len(), libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT) };
+    sockets::send(fd, &msg.to_bytes());
 }
 
 pub fn send(kind: u32, id: u32) {
@@ -76,11 +83,10 @@ pub fn reply(replies: Vec<Reply>) {
     }
 }
 
-fn send_loop(messages: std::sync::mpsc::Receiver<protocol::Msg>) {
-    for msg in messages {
-        if let Some(client) = SERVER.client() {
-            send_to(client.as_raw_fd(), msg);
-        }
+/// Sends fail once their connection closes, so replies never reach a later producer.
+fn send_loop(messages: Receiver<Outgoing>) {
+    for (client, msg) in messages {
+        send_to(client.as_raw_fd(), msg);
     }
 }
 

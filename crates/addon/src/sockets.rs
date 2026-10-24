@@ -110,6 +110,8 @@ impl Server {
             info!("oriel-display: {} connected", self.protocol.name);
             *lock(&self.client) = Some(Arc::new(client));
             (self.protocol.serve)(fd);
+            // Make sends still queued for this connection fail at once, even if the peer stopped reading.
+            unsafe { libc::shutdown(fd, libc::SHUT_RDWR) };
             *lock(&self.client) = None;
             (self.protocol.gone)();
             info!("oriel-display: {} gone", self.protocol.name);
@@ -219,6 +221,13 @@ pub fn receive(fd: RawFd) -> Option<(Vec<u8>, Vec<OwnedFd>)> {
     Some((bytes, fds))
 }
 
+/// Send one packet, waiting while the socket is full; return false on disconnect or error.
 pub fn send(fd: RawFd, bytes: &[u8]) -> bool {
-    unsafe { libc::send(fd, bytes.as_ptr().cast(), bytes.len(), libc::MSG_NOSIGNAL) == bytes.len() as isize }
+    loop {
+        let n = unsafe { libc::send(fd, bytes.as_ptr().cast(), bytes.len(), libc::MSG_NOSIGNAL) };
+        if n < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            continue;
+        }
+        return n == bytes.len() as isize;
+    }
 }
