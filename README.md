@@ -41,8 +41,8 @@ Each app uses two Kodi windows with a `renderaddon` control:
   the page reports its first frame.
 - **player**: a dialog over Kodi's fullscreen video.
 
-Both windows draw the same imported buffers. The player redraws the page
-in every GUI frame; the browse window redraws when the page changes.
+Both windows draw the same imported buffers and redraw when the page
+changes.
 
 Two Unix sockets connect the add-on to the framework. The shell sends
 WebKit dma-bufs over the producer socket. Python opens and closes windows

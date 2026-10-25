@@ -142,9 +142,7 @@ impl Renderer for Page {
         }
         with(|s| {
             s.retire();
-            // Redraw every player frame because HDR GUI composition retains only
-            // content drawn in that frame.
-            windows::drawing() && (s.dirty() || self.which == Which::Player)
+            windows::drawing() && s.dirty()
         })
     }
 
