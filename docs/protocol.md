@@ -83,7 +83,7 @@ To the add-on:
 | `{"open": "player"}` | Show the page in a dialog over Kodi's fullscreen video. |
 | `{"close": "browse"}`, `{"close": "player"}` | Close the named window. |
 | `{"started": true}` | Hide the startup mark after the page renders its first frame. |
-| `{"draw": false}`, `{"draw": true}` | Suspend or resume page drawing, such as while a Kodi dialog is open. |
+| `{"draw": false}`, `{"draw": true}` | Suspend or resume page drawing, such as while a Kodi dialog is open. Each client starts with drawing on. |
 
 From the add-on:
 

@@ -62,6 +62,8 @@ fn hello(fd: RawFd) -> bool {
         .and_then(|(bytes, _)| serde_json::from_slice::<Value>(&bytes).ok())
         .and_then(|m| m.get("hello").and_then(Value::as_u64));
     if version == Some(u64::from(protocol::CONTROL_VERSION)) {
+        // Each client starts drawing; an earlier client's draw setting ends with it.
+        windows::set_draw(true);
         return sockets::send(fd, json!({"hello": protocol::CONTROL_VERSION}).to_string().as_bytes());
     }
     error!("oriel-display: control client speaks version {version:?}, not {}", protocol::CONTROL_VERSION);
