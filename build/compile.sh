@@ -28,6 +28,8 @@ BUILD=$(sha256sum "$RELEASE/libvfs_oriel_display.so" | cut -c1-12)
 install -m 755 "$RELEASE/libvfs_oriel_display_loader.so" "$ADDON/vfs.oriel.display.so"
 install -m 755 "$RELEASE/libvfs_oriel_display.so" "$ADDON/lib/oriel-display-$BUILD.so"
 cp -r addon/resources "$ADDON/resources"
+# Leave out Finder metadata from a Mac checkout.
+find "$ADDON/resources" -name .DS_Store -delete
 python3 build/stage.py addon/addon.xml "$DEVKIT/include/kodi/versions.h" "$VERSION" > "$ADDON/addon.xml"
 python3 build/check-library.py build/box.env "$ADDON/vfs.oriel.display.so" "$ADDON/lib/oriel-display-$BUILD.so"
 python3 build/protocol.py "$CACHE/runtime/protocol"

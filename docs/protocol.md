@@ -57,9 +57,10 @@ Buffer lifecycle:
 - A pending `frame` superseded before drawing receives immediate `drawn`
   and `released` replies without being drawn. The same applies to an
   unknown buffer id, such as a frame sent before the producer receives
-  `reset`.
+  `reset` or a buffer whose GPU import or texture binding failed.
 - The previous buffer receives `released` after an EGL fence following its
-  last draw signals completion.
+  last draw signals completion. If fence creation fails, the add-on waits
+  for GPU completion before releasing it.
 - Use premultiplied pixels and finish rendering before submitting a frame;
   the add-on reads the selected buffer immediately.
 - Producer disconnection drops all held buffers.

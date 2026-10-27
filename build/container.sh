@@ -5,11 +5,13 @@ cd "$REPO"
 set -a
 source build/versions.env
 set +a
+# Docker on an Apple silicon Mac runs the ARM64 Linux build container natively.
 case "$(uname -s):$(uname -m)" in
-    Linux:x86_64|Linux:aarch64) ;;
-    *) echo "build tools require Linux on x86_64 or ARM64" >&2; exit 1 ;;
+    Linux:x86_64|Linux:aarch64|Darwin:arm64) ;;
+    *) echo "build tools require Linux on x86_64 or ARM64, or a Mac with Apple silicon" >&2; exit 1 ;;
 esac
 command -v docker >/dev/null || { echo "install and start Docker before building" >&2; exit 1; }
+command -v flock >/dev/null || { echo "install flock before building" >&2; exit 1; }
 # Reuse checkout caches and output paths for release snapshots.
 CACHE=${ORIEL_CACHE:-$REPO/.cache}
 mkdir -p "$CACHE"

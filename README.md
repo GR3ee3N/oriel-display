@@ -51,7 +51,9 @@ defines both protocols.
 
 ## Checks and builds
 
-Use Linux on x86_64 or ARM64 with Docker running. From the repository root:
+Use Linux on x86_64 or ARM64, or a Mac with Apple silicon, with Docker
+running and `flock` installed (`brew install flock` on a Mac). From the
+repository root:
 
 ```sh
 tools/check.sh
